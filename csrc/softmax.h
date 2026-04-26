@@ -89,13 +89,12 @@ __forceinline__ __device__ void max_scale_exp2_sum(Tensor<Engine0, Layout0> &ten
     CUTE_STATIC_ASSERT_V(size<0>(max) == size<0>(tensor));
     #pragma unroll
     for (int mi = 0; mi < size<0>(tensor); ++mi) {
-        MaxOp<float> max_op;
-        max(mi) = zero_init ? tensor(mi, 0) : max_op(max(mi), tensor(mi, 0));
+        max(mi) = zero_init ? tensor(mi, 0) : max(max(mi), tensor(mi, 0));
         #pragma unroll
         for (int ni = 1; ni < size<1>(tensor); ni++) {
-            max(mi) = max_op(max(mi), tensor(mi, ni));
+            max(mi) = max(max(mi), tensor(mi, ni));
         }
-        max(mi) = Allreduce<4>::run(max(mi), max_op);
+        max(mi) = reduce_max(max(mi));
         // If max is -inf, then all elements must have been -inf (possibly due to masking).
         // We don't want (-inf - (-inf)) since that would give NaN.
         const float max_scaled = max(mi) == -INFINITY ? 0.f : max(mi) * scale;
@@ -108,8 +107,7 @@ __forceinline__ __device__ void max_scale_exp2_sum(Tensor<Engine0, Layout0> &ten
             tensor(mi, ni) = exp2f(tensor(mi, ni) * scale - max_scaled);
             sum(mi) += tensor(mi, ni);
         }
-        SumOp<float> sum_op;
-        sum(mi) = Allreduce<4>::run(sum(mi), sum_op);
+        sum(mi) = reduce_sum(sum(mi));
     }
 }
 
@@ -162,7 +160,7 @@ struct Softmax {
             scale_apply_exp2(scores, row_max, softmax_scale_log2);
             // We don't do the reduce across threads here since we don't need to use the row_sum.
             // We do that reduce at the end when we need to normalize the softmax.
-            reduce_sum</*zero_init=*/false>(scores, row_sum);
+            reduce_sum(scores, row_sum);
         }
     };
 

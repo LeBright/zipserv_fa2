@@ -38,7 +38,7 @@ SMS ?= 80 86 89
 # Generate SASS code for each SM architecture listed in $(SMS)
 $(foreach sm,$(SMS),$(eval GENCODE_FLAGS += -gencode arch=compute_$(sm),code=sm_$(sm)))
 
-ALL_CCFLAGS +=  --threads 0 --std=c++11
+ALL_CCFLAGS +=  --threads 0 --std=c++17
 ALL_CCFLAGS += -maxrregcount=255 
 ALL_CCFLAGS += --use_fast_math
 ALL_CCFLAGS += --ptxas-options=-v,-warn-lmem-usage,--warn-on-spills
@@ -59,7 +59,7 @@ L_API.o:  ../csrc/L_API.cu $(HEAD_FILES)
 	$(EXEC) $(NVCC) $(INCLUDES) $(ALL_CCFLAGS) $(GENCODE_FLAGS) -o $@ -c $<
 
 # ========== zipserv_fa2 动态库编译规则 ===========
-CUTLASS_PATH ?= D:/hit/cutlass
+CUTLASS_PATH ?= ../../cutlass
 INCLUDES_FA2 := $(INCLUDES) -I$(CUTLASS_PATH)/include
 
 HEAD_FILES_FA2 = ../csrc/zipserv_fa2.cuh ../csrc/softmax.h ../csrc/Fa2.h

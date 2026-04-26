@@ -1,6 +1,7 @@
 #include "Fa2.h"
 #include "AsyncCopy_PTX.cuh"
 #include "softmax.h"
+#include <cutlass/numeric_conversion.h>
 
 
 __forceinline__ __device__ int64_t offset( const int& batch_id, const int64_t& batch_stride)
