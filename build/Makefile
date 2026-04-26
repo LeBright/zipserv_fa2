@@ -58,5 +58,17 @@ libL_API.so: L_API.o
 L_API.o:  ../csrc/L_API.cu $(HEAD_FILES)  
 	$(EXEC) $(NVCC) $(INCLUDES) $(ALL_CCFLAGS) $(GENCODE_FLAGS) -o $@ -c $<
 
+# ========== zipserv_fa2 动态库编译规则 ===========
+CUTLASS_PATH ?= D:/hit/cutlass
+INCLUDES_FA2 := $(INCLUDES) -I$(CUTLASS_PATH)/include
+
+HEAD_FILES_FA2 = ../csrc/zipserv_fa2.cuh ../csrc/softmax.h ../csrc/Fa2.h
+
+libzipserv_fa2.so: zipserv_fa2.o
+	$(NVCC) --shared $(ALL_LDFLAGS) $(GENCODE_FLAGS) -o $@ $+ $(LIBRARIES)
+
+zipserv_fa2.o: ../csrc/zipserv_fa2.cu $(HEAD_FILES_FA2)
+	$(NVCC) $(INCLUDES_FA2) $(ALL_CCFLAGS) $(GENCODE_FLAGS) -o $@ -c $<
+
 clean:
 	rm -f libL_API.so L_API.o
