@@ -1,6 +1,6 @@
 #include "Fa2.h"
-#include "AsyncCopy_PTX.cuh"
 #include "softmax.h"
+#include "L_Kernel.cuh"
 #include <cutlass/numeric_conversion.h>
 
 
@@ -95,11 +95,10 @@ __forceinline__ __device__ void gemm_rs(Tensor0 &acc, Tensor1 &tCrA, Tensor2 &tC
 }
 
 
-
-inline __global__ void compute_attn(const int& seqlen_q, const int& seqlen_kv, const int& seqlen_o,
-                                    const int& actual_seqlen_q, const int& actual_seqlen_kv,
-                                    __nv_bfloat16* Q_ptr, __nv_bfloat16* K_ptr, __nv_bfloat16* V_ptr, __nv_bfloat16* O_ptr,
-                                    float softmax_scale_log2, float scale_softmax) 
+__global__ void compute_attn(int seqlen_q, int seqlen_kv, int seqlen_o,
+                             int actual_seqlen_q, int actual_seqlen_kv,
+                             __nv_bfloat16* Q_ptr, __nv_bfloat16* K_ptr, __nv_bfloat16* V_ptr, __nv_bfloat16* O_ptr,
+                             float softmax_scale_log2, float scale_softmax) 
 {
     const int block_id = blockIdx.x;
     const int batch_id = blockIdx.y;
@@ -111,8 +110,13 @@ inline __global__ void compute_attn(const int& seqlen_q, const int& seqlen_kv, c
     // The thread index.
     const int tidx = threadIdx.x;
 
+    // printf("block_id: %d, kBlockM: %d, actual_seqlen_q: %d\n", block_id, kBlockM, actual_seqlen_q);
     if (block_id * kBlockM >= actual_seqlen_q) return;
-
+    if (threadIdx.x == 0) {
+        printf("block_id: %d, batch_id: %d, head_id: %d\n", block_id, batch_id, head_id);
+        printf("actual_seqlen_q: %d, actual_seqlen_kv: %d\n", actual_seqlen_q, actual_seqlen_kv);
+        printf("kBlockM: %d, kBlockN: %d\n", kBlockM, kBlockN);
+    }
     const int n_block_min =  0 ;
     int n_block_max = cute::ceil_div(actual_seqlen_kv, kBlockN);
 
@@ -409,4 +413,9 @@ inline __global__ void compute_attn(const int& seqlen_q, const int& seqlen_kv, c
     cute::copy(gmem_tiled_copy_O, tOsO, tOrO);
 
     copy(gmem_tiled_copy_O, tOrO, tOgO);
+        if (threadIdx.x == 0) {
+        printf("@@@block_id: %d, batch_id: %d, head_id: %d\n", block_id, batch_id, head_id);
+        printf("@@@actual_seqlen_q: %d, actual_seqlen_kv: %d\n", actual_seqlen_q, actual_seqlen_kv);
+        printf("@@@kBlockM: %d, kBlockN: %d\n", kBlockM, kBlockN);
+    }
 }

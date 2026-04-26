@@ -5,5 +5,6 @@
 // 空的 kernel，仅保证能被编译
 __global__ void dummy_kernel() {}
 
-// 可选：导出一个符号，防止 .so 为空
-extern "C" void zipserv_fa2_dummy_export() {}
+extern "C" void zipserv_fa2_dummy_export() {
+    compute_attn<<<1, 1>>>(0, 0, 0, 0, 0, nullptr, nullptr, nullptr, nullptr, 0.0f, 0.0f);
+}

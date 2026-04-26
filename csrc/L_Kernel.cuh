@@ -1240,6 +1240,9 @@ __global__ void BF16TripleBitmap_Decompress_Kernel(
 }
 
 
-
+__device__ void test_zipserv()
+{
+    printf("Hello from zipserv kernel!\n");
+}
 
 

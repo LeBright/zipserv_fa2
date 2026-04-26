@@ -12,6 +12,7 @@
 # host compiler
 HOST_COMPILER ?= g++
 CUDA_PATH ?= /usr/local/cuda
+CUTLASS_PATH ?= ../../cutlass
 NVCC          := $(CUDA_PATH)/bin/nvcc -ccbin $(HOST_COMPILER)
 
 # internal flags
@@ -28,7 +29,7 @@ ALL_LDFLAGS += $(ALL_CCFLAGS)
 ALL_LDFLAGS += $(addprefix -Xlinker ,$(LDFLAGS))
 
 # Common includes and paths for CUDA
-INCLUDES  := -I/usr/local/cuda/include/ 
+INCLUDES  := -I/usr/local/cuda/include/ -I$(CUTLASS_PATH)/include -I../csrc
 LIBRARIES := -lcublas 
 LIBRARIES += -lcusparse 
 
@@ -39,17 +40,17 @@ endif
 ################################################################################
 
 # Gencode arguments
-SMS ?= 80 86 89
+SMS ?= 80 86 89 120
 # Generate SASS code for each SM architecture listed in $(SMS)
 $(foreach sm,$(SMS),$(eval GENCODE_FLAGS += -gencode arch=compute_$(sm),code=sm_$(sm)))
 
-ALL_CCFLAGS += --threads 0 --std=c++14
+ALL_CCFLAGS += --threads 0 --std=c++17
 ALL_CCFLAGS += -maxrregcount=255 
 ALL_CCFLAGS += --use_fast_math
 ALL_CCFLAGS += --ptxas-options=-v,-warn-lmem-usage,--warn-on-spills
 ################################################################################
 # Target rules
-all: test_mm  test_decompress
+all: test_mm  test_decompress test_zipserv_fa2
 
 test_mm.o:  test_mm.cu utils.h 
 	$(EXEC) $(NVCC) $(INCLUDES) $(ALL_CCFLAGS) $(GENCODE_FLAGS) -o $@ -c $<
@@ -63,5 +64,11 @@ test_decompress.o:  test_decompress.cu utils.h
 test_decompress: test_decompress.o 
 	$(EXEC) $(NVCC) $(ALL_LDFLAGS) $(GENCODE_FLAGS) -o $@ $+ $(LIBRARIES)
 
+test_zipserv_fa2.o: test_zipserv_fa2.cu utils.h
+	$(EXEC) $(NVCC) $(INCLUDES) $(ALL_CCFLAGS) $(GENCODE_FLAGS) -o $@ -c $<
+
+test_zipserv_fa2: test_zipserv_fa2.o
+	$(EXEC) $(NVCC) $(ALL_LDFLAGS) $(GENCODE_FLAGS) -o $@ $+ $(LIBRARIES)
+
 clean:
-	rm -f test_mm test_mm.o test_decompress test_decompress.o
+	rm -f test_mm test_mm.o test_decompress test_decompress.o test_zipserv_fa2 test_zipserv_fa2.o
