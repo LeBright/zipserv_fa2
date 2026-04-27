@@ -58,7 +58,41 @@ __device__ __forceinline__ void CopyTileFromGlobalToShared_X_64_BF16(__nv_bfloat
     }
     }
 }
+// do not need tiling config
+// used for zipserv_fa2
+template<int NumOfRowsToCopy>  
+__device__ __forceinline__ void CopyTileFromGlobalToShared_X_64_BF16(__nv_bfloat16* __restrict__ SharedPTR,
+                                                                const __nv_bfloat16* GlobalPTR,
+                                                                const int   GlobalStride,
+                                                                bool        Pred = true)
+{
+    if(Pred) {
+    int lane_id       = threadIdx.x % 32;
+    int col           = lane_id % 8;
+    int row1          = lane_id / 8;
+    int row2          = lane_id / 8 + 4;
+    int store_column1 = col ^ row1;
+    int store_column2 = col ^ row2;
+    int       warp_id            = threadIdx.x / 32;
+    int       TotalNumOfCopyUnit = NumOfRowsToCopy / COPY_UNIT_FP16_ROWS;
+    const int MaxIteration =
+        (TotalNumOfCopyUnit - 1) / (4 * 1) + 1;
 
+#pragma unroll
+    for (int i = 0; i < MaxIteration; i++) {
+        int  COPY_UNIT_I        = (i * (4 * 1) + warp_id);
+        bool AsyncCopyPredictor = COPY_UNIT_I < TotalNumOfCopyUnit && Pred;  
+        const __nv_bfloat16* GlobalPTR_Unit        = GlobalPTR + COPY_UNIT_I * COPY_UNIT_FP16_ROWS * GlobalStride;
+        __nv_bfloat16* __restrict__ SharedPTR_Unit = SharedPTR + COPY_UNIT_I * COPY_UNIT_FP16_ROWS * TILE_K;
+        cp_async<16>(SharedPTR_Unit + store_column1 * HALF_PER_128B + row1 * TILE_K,
+                     GlobalPTR_Unit + col * HALF_PER_128B + row1 * GlobalStride,
+                     AsyncCopyPredictor);
+        cp_async<16>(SharedPTR_Unit + store_column2 * HALF_PER_128B + row2 * TILE_K,
+                     GlobalPTR_Unit + col * HALF_PER_128B + row2 * GlobalStride,
+                     AsyncCopyPredictor);
+    }
+    }
+}
 
 template<int NumOfRowsToCopy, typename TilingConfig>  
 __device__ __forceinline__ void CopyTileFromGlobalToShared_X_64_BF16_Safe(__nv_bfloat16* __restrict__ SharedPTR,
@@ -152,6 +186,36 @@ __device__ __forceinline__ void CopyTripleBitmapToShared(uint64_t* __restrict__ 
                  AsyncCopyPredictor);
 }
 
+// do not need tiling config
+// used for zipserv_fa2
+template<int NumOfRowsToCopy>
+__device__ __forceinline__ void CopyTripleBitmapToShared(uint64_t* __restrict__ SharedBitmap1,
+                                                         uint64_t* __restrict__ SharedBitmap2,
+                                                         uint64_t* __restrict__ SharedBitmap3,
+                                                         const uint64_t* GlobalBitmap1,
+                                                         const uint64_t* GlobalBitmap2,
+                                                         const uint64_t* GlobalBitmap3,
+                                                         bool Pred = true)
+{
+    int lane_id = threadIdx.x % 32;
+    int warp_id = threadIdx.x / 32;
+    int TotalNumOfCopyUnit = NumOfRowsToCopy;
+
+    bool AsyncCopyPredictor = warp_id < TotalNumOfCopyUnit && Pred;
+    
+    // Load three bitmaps
+    cp_async<16>(SharedBitmap1 + lane_id * UINT64_PER_128B, 
+                 GlobalBitmap1 + lane_id * UINT64_PER_128B,   
+                 AsyncCopyPredictor);
+                 
+    cp_async<16>(SharedBitmap2 + lane_id * UINT64_PER_128B, 
+                 GlobalBitmap2 + lane_id * UINT64_PER_128B,   
+                 AsyncCopyPredictor);
+                 
+    cp_async<16>(SharedBitmap3 + lane_id * UINT64_PER_128B, 
+                 GlobalBitmap3 + lane_id * UINT64_PER_128B,   
+                 AsyncCopyPredictor);
+}
 
 // Load three bitmaps to shared memory (128 bitmap)
 template<int NumOfRowsToCopy, typename TilingConfig>
@@ -216,6 +280,38 @@ __device__ __forceinline__ void CopyTripleBitmapToShared_256(uint64_t* __restric
 
 // Load compressed data to shared memory
 template<typename TilingConfig>
+__device__ __forceinline__ void CopyCompressedDataToShared(uint8_t* __restrict__ SharedSignMantissa,
+                                                           __nv_bfloat16* __restrict__ SharedFullValues,
+                                                           const uint8_t* GlobalSignMantissa,
+                                                           const __nv_bfloat16* GlobalFullValues,
+                                                           const int HighFreqCount,
+                                                           const int FullCount,
+                                                           bool Pred = true)
+{
+    if(Pred) {
+        int threadPerBlock = blockDim.x;
+        // Load high-frequency elements (sign+mantissa), 16 elements per batch
+        int HF_Batches = (HighFreqCount>>4);
+        for(int i = threadIdx.x; i < HF_Batches; i += threadPerBlock) {
+            // Complete 16 elements can be loaded with 64-bit load
+            const uint8_t* GlobalPTR_Unit        =  GlobalSignMantissa + i * 16;  
+            uint8_t* __restrict__ SharedPTR_Unit = SharedSignMantissa + i * 16; 
+            cp_async<16>(SharedPTR_Unit, GlobalPTR_Unit, Pred);
+        }
+        
+        // Load non-high-frequency elements (full values), 8 elements per batch
+        int Full_Batches = (FullCount>>3);
+        for(int i = threadIdx.x; i < Full_Batches; i += threadPerBlock) {
+            // Complete 4 elements can be loaded with 64-bit load
+            const __nv_bfloat16* GlobalPTR_Unit        =  GlobalFullValues + i * 8;  
+            __nv_bfloat16* __restrict__ SharedPTR_Unit = SharedFullValues + i * 8; 
+            cp_async<16>(SharedPTR_Unit, GlobalPTR_Unit, Pred);
+        }
+    }
+}
+
+// do not need tiling config
+// used for zipserv_fa2
 __device__ __forceinline__ void CopyCompressedDataToShared(uint8_t* __restrict__ SharedSignMantissa,
                                                            __nv_bfloat16* __restrict__ SharedFullValues,
                                                            const uint8_t* GlobalSignMantissa,

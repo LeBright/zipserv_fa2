@@ -256,6 +256,26 @@ __device__ __forceinline__ void SingleMMASlice(
             MMA_BF16_M16N8K16(c_uint32_t[j * WARP_ROW_TENSORS_BITMAP_V3] + 4, a_read[0], b_read[j] + 2);
     }
 }
+// do not use tiling config
+// used for zipserv_fa2
+__device__ __forceinline__ void SingleMMASlice(
+    float c[][REG_PER_C_TENSOR_16_16],
+    uint32_t (*a)[4],
+    uint32_t (*b)[4],
+    int slice_id) // 0,1,2,3 represents position within BLOCK_K_TENSORS
+{
+    uint32_t (*c_uint32_t)[REG_PER_C_TENSOR_16_16] = reinterpret_cast<uint32_t(*)[REG_PER_C_TENSOR_16_16]>(c);
+    
+    // Calculate correct read pointer - odd slice uses second buffer, even slice uses first buffer
+    uint32_t (*a_read)[4] = a + (slice_id % 2) * WARP_ROW_TENSORS_BITMAP_V3;
+    uint32_t (*b_read)[4] = b + (slice_id % 2) * 4;
+    
+    #pragma unroll
+    for (int j = 0; j < 4; j++) {
+        MMA_BF16_M16N8K16(c_uint32_t[j * WARP_ROW_TENSORS_BITMAP_V3], a_read[0], b_read[j]);
+        MMA_BF16_M16N8K16(c_uint32_t[j * WARP_ROW_TENSORS_BITMAP_V3] + 4, a_read[0], b_read[j] + 2);
+    }
+}
 
 // 2. Single data loading fragment function
 template<typename TilingConfig>
@@ -287,6 +307,39 @@ __device__ __forceinline__ void LoadNextSlice(
     
     // Load B fragment
     B_FragLoadFromSharedToRegisters_BF16<TilingConfig::WARP_COL_TENSORS, TilingConfig::N8>(
+        b_write, SharedMemoryPTR, warp_start_col, (next_slice_id % 4) * MMA_K);
+}
+
+// do not use tiling config
+// used for zipserv_fa2
+__device__ __forceinline__ void LoadNextSlice(
+    uint32_t (*a)[4],
+    uint32_t (*b)[4],
+    const uint8_t* __restrict__ SharedSignMantissa,
+    const __nv_bfloat16* __restrict__ SharedFullValues,
+    const uint64_t* __restrict__ SharedBitmap1_Warp,
+    const uint64_t* __restrict__ SharedBitmap2_Warp,
+    const uint64_t* __restrict__ SharedBitmap3_Warp,
+    const uint8_t start_exp,
+    int& high_freq_start,
+    int& full_start,
+    __nv_bfloat16* __restrict__ SharedMemoryPTR,
+    int warp_start_row,
+    int warp_start_col,
+    int next_slice_id) // Next slice index to load
+{
+    // Calculate write pointer - important fix: next_slice_id should determine which buffer to use
+    uint32_t (*a_write)[4] = a + (next_slice_id % 2) * WARP_ROW_TENSORS_BITMAP_V3;
+    uint32_t (*b_write)[4] = b + (next_slice_id % 2) * 4;
+    
+    // Load A fragment
+    LoadBF16FragWithTripleBitmap_SingleRow(
+        a_write[0], SharedSignMantissa, SharedFullValues,
+        SharedBitmap1_Warp, SharedBitmap2_Warp, SharedBitmap3_Warp, start_exp,
+        high_freq_start, full_start, next_slice_id % 4);
+    
+    // Load B fragment
+    B_FragLoadFromSharedToRegisters_BF16<4, 0>(
         b_write, SharedMemoryPTR, warp_start_col, (next_slice_id % 4) * MMA_K);
 }
 
@@ -1238,11 +1291,3 @@ __global__ void BF16TripleBitmap_Decompress_Kernel(
     // VectorizedWriteToGlobalMemory_256(
     //     smem_output_2d, Output, global_start_m, global_start_k, M_Global, K_Global);
 }
-
-
-__device__ void test_zipserv()
-{
-    printf("Hello from zipserv kernel!\n");
-}
-
-
