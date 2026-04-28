@@ -630,13 +630,10 @@ __global__ void compute_atten_zipserv(int seqlen_q, int seqlen_kv, int seqlen_o,
     cute::copy(gmem_tiled_copy_O, tOsO, tOrO);
 
     copy(gmem_tiled_copy_O, tOrO, tOgO);
-        if (threadIdx.x == 0) {
-        printf("@@@block_id: %d, batch_id: %d, head_id: %d\n", block_id, batch_id, head_id);
-        printf("@@@actual_seqlen_q: %d, actual_seqlen_kv: %d\n", actual_seqlen_q, actual_seqlen_kv);
-        printf("@@@kBlockM: %d, kBlockN: %d\n", kBlockM, kBlockN);
-    }
 }
 
+// A*B=C
+// B in global, transposed
 __device__ void BF16TripleBitmap_MM_Kernel_Fast(
     const uint8_t* SignMantissa,
     const __nv_bfloat16* CompressedFull,
@@ -891,17 +888,12 @@ __device__ void BF16TripleBitmap_MM_Kernel_Fast(
         }
     }
     
-    // Store results using the existing code
-    float(*smem_CFrag)[TilingConfig::TILE_M + PADDING_SHARED_MEM_FOR_C] =
-        reinterpret_cast<float(*)[TilingConfig::TILE_M + PADDING_SHARED_MEM_FOR_C]>(smem1);
-    StoreToSharedMemoryFromRegisterBitmapV3<TilingConfig>(smem_CFrag, c);
+    // // Store results using the existing code
+    // float(*smem_CFrag)[HeadDim + PADDING_SHARED_MEM_FOR_C] =
+    //     reinterpret_cast<float(*)[HeadDim + PADDING_SHARED_MEM_FOR_C]>(smem1);
+    // StoreToSharedMemoryFromRegisterBitmapV3(smem_CFrag, c);
+
+    
+
     __syncthreads();
-    
-    __nv_bfloat16* OutputPTR = Output + BatchID * (M_Global * N_Global) + Tile_Start_M + Tile_Start_N * M_Global;
-    
-    #pragma unroll
-    for (int i = warpId; i < TilingConfig::TILE_N2; i += TilingConfig::BLOCK_WARPS)
-        #pragma unroll
-        for (int j = threadIdx.x % WARP_SIZE; j < TilingConfig::TILE_M; j += WARP_SIZE)
-            OutputPTR[j + i * M_Global] = __float2bfloat16_rn((*(smem_CFrag + i))[j]);
 }

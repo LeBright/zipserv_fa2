@@ -322,7 +322,7 @@ __device__ __forceinline__ void CopyCompressedDataToShared(uint8_t* __restrict__
 {
     if(Pred) {
         int threadPerBlock = blockDim.x;
-        // Load high-frequency elements (sign+mantissa), 16 elements per batch
+        // Load high-frequency elements (sign+mantissa), 16 elements per batch, 128/8=16
         int HF_Batches = (HighFreqCount>>4);
         for(int i = threadIdx.x; i < HF_Batches; i += threadPerBlock) {
             // Complete 16 elements can be loaded with 64-bit load
@@ -331,7 +331,7 @@ __device__ __forceinline__ void CopyCompressedDataToShared(uint8_t* __restrict__
             cp_async<16>(SharedPTR_Unit, GlobalPTR_Unit, Pred);
         }
         
-        // Load non-high-frequency elements (full values), 8 elements per batch
+        // Load non-high-frequency elements (full values), 8 elements per batch 128/16=8
         int Full_Batches = (FullCount>>3);
         for(int i = threadIdx.x; i < Full_Batches; i += threadPerBlock) {
             // Complete 4 elements can be loaded with 64-bit load
@@ -380,5 +380,44 @@ StoreToSharedMemoryFromRegisterBitmapV3(float (*smem_CFrag)[TilingConfig::TILE_M
         }
     }
 }
-
+// do not need tiling config
+// used for zipserv_fa2
+__device__ __forceinline__ void
+StoreToSharedMemoryFromRegisterBitmapV3(float (*smem_CFrag)[HeadDim + PADDING_SHARED_MEM_FOR_C],
+                                float c[][REG_PER_C_TENSOR_16_16])
+{
+    const unsigned int warpId        = threadIdx.x / WARP_SIZE;
+    int                Warp_i        = warpId / 4;
+    int                Warp_j        = warpId % 4;
+    int                Warp_i_offset = Warp_i * (MMA_M * WARP_ROW_TENSORS_BITMAP_V3);
+    int                Warp_j_offset = Warp_j * (MMA_N * 4);
+    //
+    int lane_id = threadIdx.x % WARP_SIZE;
+//
+#pragma unroll
+    for (int i = 0; i < WARP_ROW_TENSORS_BITMAP_V3; i++) {
+#pragma unroll
+        for (int j = 0; j < 4; j++) {
+            // Dealing with one 16*16 Tensor
+            int RegSetID        = i + j * WARP_ROW_TENSORS_BITMAP_V3;
+            int Tensor_i_offset = Warp_i_offset + i * MMA_M;
+            int Tensor_j_offset = Warp_j_offset + j * MMA_N;
+#pragma unroll
+            for (int r = 0; r < REG_PER_C_TENSOR_16_16; r++) {
+                int row_offset = lane_id / 4;
+                int col_offset = (lane_id % 4) * 2;
+                //
+                if (r % 2 > 0)
+                    col_offset += 1;
+                //
+                if (r % 4 >= 2)
+                    row_offset += 8;
+                if (r >= 4)
+                    col_offset += 8;
+                //
+                (*(smem_CFrag + Tensor_j_offset + col_offset))[Tensor_i_offset + row_offset] = c[RegSetID][r];
+            }
+        }
+    }
+}
 #endif
