@@ -422,23 +422,36 @@ __global__ void compute_attn(int seqlen_q, int seqlen_kv, int seqlen_o,
 
 
 __global__ void compute_atten_zipserv(int seqlen_q, int seqlen_kv, int seqlen_o,
-                                      int actual_seqlen_q, int actual_seqlen_kv,
-                                      __nv_bfloat16* Q_ptr, __nv_bfloat16* K_ptr, __nv_bfloat16* V_ptr, __nv_bfloat16* O_ptr,
-                                      float softmax_scale_log2, float scale_softmax,
-                                      const uint8_t* SignMantissa,
-                                      const __nv_bfloat16* CompressedFull,
-                                      const uint64_t* Bitmap1,
-                                      const uint64_t* Bitmap2,
-                                      const uint64_t* Bitmap3,
-                                      const int* TileOffsets_Median,
-                                      const int* TileOffsets_Global,
-                                      const int max_high_freq_count,
-                                      const int max_full_count,
-                                      const uint8_t start_exp,
-                                      const __nv_bfloat16* B,
-                                      const int M_Global,
-                                      const int N_Global,
-                                      const int K_Global)
+                             int actual_seqlen_q, int actual_seqlen_kv,
+                             __nv_bfloat16* Q_ptr, __nv_bfloat16* K_ptr, __nv_bfloat16* V_ptr, __nv_bfloat16* O_ptr,
+                             float softmax_scale_log2, float scale_softmax,
+                            const __nv_bfloat16* X,
+                            const uint8_t* SignMantissa_Wq,
+                            const __nv_bfloat16* CompressedFull_Wq,
+                            const uint64_t* Bitmap1_Wq,
+                            const uint64_t* Bitmap2_Wq,
+                            const uint64_t* Bitmap3_Wq,
+                            const int* TileOffsets_Median_Wq,
+                            const int* TileOffsets_Global_Wq,
+                            const int max_high_freq_count_Wq,
+                            const int max_full_count_Wq,
+                            const uint8_t start_exp_Wq,
+                            const int M_Global_Wq,
+                            const int N_Global_Wq,
+                            const int K_Global_Wq,
+                            const uint8_t* SignMantissa_Wk,
+                            const __nv_bfloat16* CompressedFull_Wk,
+                            const uint64_t* Bitmap1_Wk,
+                            const uint64_t* Bitmap2_Wk,
+                            const uint64_t* Bitmap3_Wk,
+                            const int* TileOffsets_Median_Wk,
+                            const int* TileOffsets_Global_Wk,
+                            const int max_high_freq_count_Wk,
+                            const int max_full_count_Wk,
+                            const uint8_t start_exp_Wk,
+                            const int M_Global_Wk,
+                            const int N_Global_Wk,
+                            const int K_Global_Wk)
 {
     const int block_id = blockIdx.x;
     const int batch_id = blockIdx.y;
@@ -452,68 +465,85 @@ __global__ void compute_atten_zipserv(int seqlen_q, int seqlen_kv, int seqlen_o,
 
     // printf("block_id: %d, kBlockM: %d, actual_seqlen_q: %d\n", block_id, kBlockM, actual_seqlen_q);
     if (block_id * kBlockM >= actual_seqlen_q) return;
-    if (threadIdx.x == 0) 
-    {
-        printf("block_id: %d, batch_id: %d, head_id: %d\n", block_id, batch_id, head_id);
-        printf("actual_seqlen_q: %d, actual_seqlen_kv: %d\n", actual_seqlen_q, actual_seqlen_kv);
-        printf("kBlockM: %d, kBlockN: %d\n", kBlockM, kBlockN);
-    }
+
     const int n_block_min =  0 ;
     int n_block_max = cute::ceil_div(actual_seqlen_kv, kBlockN);
 
-    // BF16TripleBitmap_MM_Kernel_Fast(
-    // SignMantissa,
-    // CompressedFull,
-    // Bitmap1,
-    // Bitmap2,
-    // Bitmap3,
-    // TileOffsets_Median,
-    // TileOffsets_Global,
-    // max_high_freq_count,
-    // max_full_count,
-    // start_exp,
-    // B,
-    // Output,
-    // M_Global,
-    // N_Global,
-    // K_Global)
 
-    auto Q_batch_ptr=make_gmem_ptr(reinterpret_cast<__nv_bfloat16*>(Q_ptr)+offset(batch_id, seqlen_q*HeadNum*HeadDim));
-    Tensor Q_batch = make_tensor(Q_batch_ptr,
-                            make_shape(actual_seqlen_q, HeadNum, HeadDim),
-                            make_stride(HeadNum*HeadDim, HeadDim, _1{}));
-    auto K_batch_ptr = make_gmem_ptr(reinterpret_cast<__nv_bfloat16*>(K_ptr)+offset(batch_id, seqlen_kv*HeadNum*HeadDim));
-    Tensor K_batch = make_tensor(K_batch_ptr,
-                            make_shape(actual_seqlen_kv, HeadNum,HeadDim),
-                            make_stride(HeadDim*HeadNum,HeadDim,_1{}));
+
+    // auto Q_batch_ptr=make_gmem_ptr(reinterpret_cast<__nv_bfloat16*>(Q_ptr)+offset(batch_id, seqlen_q*HeadNum*HeadDim));
+    // Tensor Q_batch = make_tensor(Q_batch_ptr,
+    //                         make_shape(actual_seqlen_q, HeadNum, HeadDim),
+    //                         make_stride(HeadNum*HeadDim, HeadDim, _1{}));
+    // auto K_batch_ptr = make_gmem_ptr(reinterpret_cast<__nv_bfloat16*>(K_ptr)+offset(batch_id, seqlen_kv*HeadNum*HeadDim));
+    // Tensor K_batch = make_tensor(K_batch_ptr,
+    //                         make_shape(actual_seqlen_kv, HeadNum,HeadDim),
+    //                         make_stride(HeadDim*HeadNum,HeadDim,_1{}));
 
     auto V_batch_ptr = make_gmem_ptr(reinterpret_cast<__nv_bfloat16*>(V_ptr)+offset(batch_id, seqlen_kv*HeadNum*HeadDim));
     Tensor V_batch = make_tensor(V_batch_ptr,
                             make_shape(actual_seqlen_kv, HeadNum,HeadDim),
                             make_stride(HeadDim*HeadNum,HeadDim,_1{}));
 
-    Tensor Q_globalmem = local_tile(Q_batch(_, head_id, _),
-                                    Shape<Int<kBlockM>,Int<HeadDim>>{},
-                                    make_coord(block_id,0));
-    Tensor K_globalmem = local_tile(K_batch(_,head_id,_),
-                                    Shape<Int<kBlockN>,Int<HeadDim>>{},
-                                    make_coord(_,0));
+    // Tensor Q_globalmem = local_tile(Q_batch(_, head_id, _),
+    //                                 Shape<Int<kBlockM>,Int<HeadDim>>{},
+    //                                 make_coord(block_id,0));
+    // Tensor K_globalmem = local_tile(K_batch(_,head_id,_),
+    //                                 Shape<Int<kBlockN>,Int<HeadDim>>{},
+    //                                 make_coord(_,0));
     Tensor V_globalmem = local_tile(V_batch(_,head_id,_),
                                     Shape<Int<kBlockN>,Int<HeadDim>>{},
                                     make_coord(_,0));
+    int n_block = n_block_max - 1;
+
+    // prepare Q
+    BF16TripleBitmap_MM_Kernel_Fast(reinterpret_cast<__nv_bfloat16*>(smem),
+                                    SignMantissa_Wq,
+                                    CompressedFull_Wq,
+                                    Bitmap1_Wq,
+                                    Bitmap2_Wq,
+                                    Bitmap3_Wq,
+                                    TileOffsets_Median_Wq,
+                                    TileOffsets_Global_Wq,
+                                    max_high_freq_count_Wq,
+                                    max_full_count_Wq,
+                                    start_exp_Wq,
+                                    X,
+                                    M_Global_Wq,
+                                    N_Global_Wq,
+                                    K_Global_Wq,
+                                    head_id,
+                                    n_block);
 
     Tensor Q_sharedmem = make_tensor(make_smem_ptr(reinterpret_cast<__nv_bfloat16*>(smem)), SmemLayoutQ{});
     Tensor K_sharedmem = make_tensor(Q_sharedmem.data()+size(Q_sharedmem),SmemLayoutKV{});
     Tensor V_sharedmem = make_tensor(K_sharedmem.data()+size(K_sharedmem),SmemLayoutKV{});
     Tensor V_sharedmem_trans = make_tensor(V_sharedmem.data(),SmemLayoutVtransposed{});
     Tensor V_sharedmem_trans_noswizzle = make_tensor(V_sharedmem.data(), SmemLayoutVtransposedNoSwizzle{});
-
+    // prepare K
+    BF16TripleBitmap_MM_Kernel_Fast(reinterpret_cast<__nv_bfloat16*>(smem+size(Q_sharedmem)),
+                                    SignMantissa_Wk,
+                                    CompressedFull_Wk,
+                                    Bitmap1_Wk,
+                                    Bitmap2_Wk,
+                                    Bitmap3_Wk,
+                                    TileOffsets_Median_Wk,
+                                    TileOffsets_Global_Wk,
+                                    max_high_freq_count_Wk,
+                                    max_full_count_Wk,
+                                    start_exp_Wk,
+                                    X,
+                                    M_Global_Wk,
+                                    N_Global_Wk,
+                                    K_Global_Wk,
+                                    head_id,
+                                    n_block);
     GmemTiledCopyQKV tiled_cpy_g2s;
     auto tiled_cpy_g2s_thread = tiled_cpy_g2s.get_thread_slice(tidx); 
-    Tensor tiled_cpy_g2s_thread_Qsrc = tiled_cpy_g2s_thread.partition_S(Q_globalmem);
-    Tensor tiled_cpy_g2s_thread_Qdst = tiled_cpy_g2s_thread.partition_D(Q_sharedmem);
-    Tensor tiled_cpy_g2s_thread_Ksrc = tiled_cpy_g2s_thread.partition_S(K_globalmem);
-    Tensor tiled_cpy_g2s_thread_Kdst = tiled_cpy_g2s_thread.partition_D(K_sharedmem);
+    // Tensor tiled_cpy_g2s_thread_Qsrc = tiled_cpy_g2s_thread.partition_S(Q_globalmem);
+    // Tensor tiled_cpy_g2s_thread_Qdst = tiled_cpy_g2s_thread.partition_D(Q_sharedmem);
+    // Tensor tiled_cpy_g2s_thread_Ksrc = tiled_cpy_g2s_thread.partition_S(K_globalmem);
+    // Tensor tiled_cpy_g2s_thread_Kdst = tiled_cpy_g2s_thread.partition_D(K_sharedmem);
     Tensor tiled_cpy_g2s_thread_Vsrc = tiled_cpy_g2s_thread.partition_S(V_globalmem);
     Tensor tiled_cpy_g2s_thread_Vdst = tiled_cpy_g2s_thread.partition_D(V_sharedmem);
 
@@ -536,9 +566,7 @@ __global__ void compute_atten_zipserv(int seqlen_q, int seqlen_kv, int seqlen_o,
     auto tiled_copy_s2r_thread_V = tiled_copy_s2r_V.get_thread_slice(tidx);
     Tensor tiled_cpy_s2r_Vsrc = tiled_copy_s2r_thread_V.partition_S(V_sharedmem_trans);
 
-    copy(tiled_cpy_g2s,tiled_cpy_g2s_thread_Qsrc, tiled_cpy_g2s_thread_Qdst);
-    int n_block = n_block_max - 1;
-    copy(tiled_cpy_g2s, tiled_cpy_g2s_thread_Ksrc(_, _, _, n_block), tiled_cpy_g2s_thread_Kdst);
+
     cute::cp_async_fence();
 
     clear(tiled_mma_acc_O);
@@ -570,7 +598,24 @@ __global__ void compute_atten_zipserv(int seqlen_q, int seqlen_kv, int seqlen_o,
 
         // load next K
         if (n_block > n_block_min) {
-            copy(tiled_cpy_g2s, tiled_cpy_g2s_thread_Ksrc(_, _, _, n_block - 1), tiled_cpy_g2s_thread_Kdst);
+            // copy(tiled_cpy_g2s, tiled_cpy_g2s_thread_Ksrc(_, _, _, n_block - 1), tiled_cpy_g2s_thread_Kdst);
+            BF16TripleBitmap_MM_Kernel_Fast(reinterpret_cast<__nv_bfloat16*>(smem+size(Q_sharedmem)),
+                                SignMantissa_Wk,
+                                CompressedFull_Wk,
+                                Bitmap1_Wk,
+                                Bitmap2_Wk,
+                                Bitmap3_Wk,
+                                TileOffsets_Median_Wk,
+                                TileOffsets_Global_Wk,
+                                max_high_freq_count_Wk,
+                                max_full_count_Wk,
+                                start_exp_Wk,
+                                X,
+                                M_Global_Wk,
+                                N_Global_Wk,
+                                K_Global_Wk,
+                                head_id,
+                                n_block-1);
             cute::cp_async_fence();
         }
 
@@ -635,6 +680,7 @@ __global__ void compute_atten_zipserv(int seqlen_q, int seqlen_kv, int seqlen_o,
 // A*B=C
 // B in global, transposed
 __device__ void BF16TripleBitmap_MM_Kernel_Fast(
+    __nv_bfloat16* smem_CFrag,
     const uint8_t* SignMantissa,
     const __nv_bfloat16* CompressedFull,
     const uint64_t* Bitmap1,
@@ -646,7 +692,6 @@ __device__ void BF16TripleBitmap_MM_Kernel_Fast(
     const int max_full_count,
     const uint8_t start_exp,
     const __nv_bfloat16* B,
-    __nv_bfloat16* Output,
     const int M_Global,
     const int N_Global,
     const int K_Global,
@@ -668,10 +713,10 @@ __device__ void BF16TripleBitmap_MM_Kernel_Fast(
     const int BlockOffset = K_Global / TILE_K * y;
     
     // Calculate shared memory size - add double buffering support
-    extern __shared__ __align__(128) __nv_bfloat16 smem1[];
+    // extern __shared__ __nv_bfloat16 smem1[];
     
     // B matrix double buffering
-    __nv_bfloat16* smem_B = smem1;
+    __nv_bfloat16* smem_B = smem_CFrag;
     // A matrix related data double buffering
     const int bitmap_size = 64;
     
@@ -887,13 +932,8 @@ __device__ void BF16TripleBitmap_MM_Kernel_Fast(
                 smem_write_B_PTR, warp_start_row, warp_start_col, 0);
         }
     }
-    
-    // // Store results using the existing code
-    // float(*smem_CFrag)[HeadDim + PADDING_SHARED_MEM_FOR_C] =
-    //     reinterpret_cast<float(*)[HeadDim + PADDING_SHARED_MEM_FOR_C]>(smem1);
-    // StoreToSharedMemoryFromRegisterBitmapV3(smem_CFrag, c);
 
-    
+    StoreToSharedMemoryFromRegisterBitmapV3_Swizzle(smem_CFrag, c);
 
     __syncthreads();
 }

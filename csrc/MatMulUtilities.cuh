@@ -21,6 +21,7 @@
 #include "AsyncCopy_PTX.cuh"
 #include "MMA_PTX.cuh"
 #include "TilingConfig.h"
+#include "Fa2.h"
 
 
 // Load BF16 data from global memory to shared memory
@@ -420,4 +421,46 @@ StoreToSharedMemoryFromRegisterBitmapV3(float (*smem_CFrag)[HeadDim + PADDING_SH
         }
     }
 }
+
+// use swizzle
+__device__ __forceinline__ 
+void StoreToSharedMemoryFromRegisterBitmapV3_Swizzle(
+    __nv_bfloat16* smem_ptr,   // e.g. make_smem_ptr(smem_C)
+    float c[][REG_PER_C_TENSOR_16_16])   // c[4][8]
+{
+    const int warpId  = threadIdx.x / WARP_SIZE;  
+    const int lane_id = threadIdx.x % WARP_SIZE;  
+
+    const int Warp_i_offset = warpId * MMA_M;      // 0 /16 /32 /48
+
+    Tensor sC = make_tensor(smem_ptr, Shape<Int<kBlockM>, Int<HeadDim>>{},SmemLayoutQ{});
+
+    #pragma unroll
+    for(int tensorId=0;tensorId<4;tensorId++)
+    {
+        int tensor_j_offset = tensorId * MMA_N;
+        #pragma unroll
+        for(int reg_id=0;reg_id<REG_PER_C_TENSOR_16_16;reg_id++)
+        {
+            int row_offset=lane_id/4;
+            int col_offset=(lane_id%4)*2;
+            if(reg_id%2>0)
+            {
+                col_offset+=1;
+            }
+            if(reg_id%4>=2)
+            {
+                row_offset+=8;
+            }
+            if(reg_id>=4)
+            {
+                col_offset+=8;
+            }
+            int row=Warp_i_offset+row_offset;
+            int col=tensor_j_offset+col_offset;
+            sC(row,col)=__float2bfloat16(c[tensorId][reg_id]);
+        }
+    }
+}
+
 #endif
