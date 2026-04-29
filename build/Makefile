@@ -12,6 +12,7 @@
 # host compiler
 HOST_COMPILER ?= g++
 CUDA_PATH ?= /usr/local/cuda
+CUTLASS_PATH ?= ../../cutlass
 NVCC          := $(CUDA_PATH)/bin/nvcc -ccbin $(HOST_COMPILER)
 
 # internal flags
@@ -28,7 +29,7 @@ ALL_LDFLAGS += $(ALL_CCFLAGS)
 ALL_LDFLAGS += $(addprefix -Xlinker ,$(LDFLAGS))
 
 # Common includes and paths for CUDA
-INCLUDES  := -I/usr/local/cuda/include/
+INCLUDES  := -I/usr/local/cuda/include/ -I$(CUTLASS_PATH)/include
 LIBRARIES := -lcublas
 
 ################################################################################
@@ -58,8 +59,7 @@ libL_API.so: L_API.o
 L_API.o:  ../csrc/L_API.cu $(HEAD_FILES)  
 	$(EXEC) $(NVCC) $(INCLUDES) $(ALL_CCFLAGS) $(GENCODE_FLAGS) -o $@ -c $<
 
-# ========== zipserv_fa2 动态库编译规则 ===========
-CUTLASS_PATH ?= ../../cutlass
+
 INCLUDES_FA2 := $(INCLUDES) -I$(CUTLASS_PATH)/include
 
 HEAD_FILES_FA2 = ../csrc/zipserv_fa2.cuh ../csrc/softmax.h ../csrc/Fa2.h

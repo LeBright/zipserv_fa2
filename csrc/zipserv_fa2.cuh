@@ -497,7 +497,7 @@ __global__ void compute_atten_zipserv(int seqlen_q, int seqlen_kv, int seqlen_o,
     int n_block = n_block_max - 1;
 
     // prepare Q
-    BF16TripleBitmap_MM_Kernel_Fast(reinterpret_cast<__nv_bfloat16*>(smem),
+    BF16TripleBitmap_MM_Kernel_prapareQKV(reinterpret_cast<__nv_bfloat16*>(smem),
                                     SignMantissa_Wq,
                                     CompressedFull_Wq,
                                     Bitmap1_Wq,
@@ -521,7 +521,7 @@ __global__ void compute_atten_zipserv(int seqlen_q, int seqlen_kv, int seqlen_o,
     Tensor V_sharedmem_trans = make_tensor(V_sharedmem.data(),SmemLayoutVtransposed{});
     Tensor V_sharedmem_trans_noswizzle = make_tensor(V_sharedmem.data(), SmemLayoutVtransposedNoSwizzle{});
     // prepare K
-    BF16TripleBitmap_MM_Kernel_Fast(reinterpret_cast<__nv_bfloat16*>(smem+size(Q_sharedmem)),
+    BF16TripleBitmap_MM_Kernel_prapareQKV(reinterpret_cast<__nv_bfloat16*>(smem+size(Q_sharedmem)),
                                     SignMantissa_Wk,
                                     CompressedFull_Wk,
                                     Bitmap1_Wk,
@@ -599,7 +599,7 @@ __global__ void compute_atten_zipserv(int seqlen_q, int seqlen_kv, int seqlen_o,
         // load next K
         if (n_block > n_block_min) {
             // copy(tiled_cpy_g2s, tiled_cpy_g2s_thread_Ksrc(_, _, _, n_block - 1), tiled_cpy_g2s_thread_Kdst);
-            BF16TripleBitmap_MM_Kernel_Fast(reinterpret_cast<__nv_bfloat16*>(smem+size(Q_sharedmem)),
+            BF16TripleBitmap_MM_Kernel_prapareQKV(reinterpret_cast<__nv_bfloat16*>(smem+size(Q_sharedmem)),
                                 SignMantissa_Wk,
                                 CompressedFull_Wk,
                                 Bitmap1_Wk,
@@ -679,7 +679,7 @@ __global__ void compute_atten_zipserv(int seqlen_q, int seqlen_kv, int seqlen_o,
 
 // A*B=C
 // B in global, transposed
-__device__ void BF16TripleBitmap_MM_Kernel_Fast(
+__device__ void BF16TripleBitmap_MM_Kernel_prapareQKV(
     __nv_bfloat16* smem_CFrag,
     const uint8_t* SignMantissa,
     const __nv_bfloat16* CompressedFull,

@@ -433,7 +433,7 @@ void StoreToSharedMemoryFromRegisterBitmapV3_Swizzle(
 
     const int Warp_i_offset = warpId * MMA_M;      // 0 /16 /32 /48
 
-    Tensor sC = make_tensor(smem_ptr, Shape<Int<kBlockM>, Int<HeadDim>>{},SmemLayoutQ{});
+    Tensor sC = make_tensor(smem_ptr, SmemLayoutQ{});
 
     #pragma unroll
     for(int tensorId=0;tensorId<4;tensorId++)
