@@ -170,7 +170,68 @@ void init_host_matrices_bf16(__nv_bfloat16* A_h, __nv_bfloat16* B_h, int M, int 
         }
     }
 }
+void init_host_matrices_bf16_one(__nv_bfloat16* A_h, int M, int K, 
+                           const int* custom_exponents = nullptr, unsigned seed = 12345) {
+    // Default high-frequency exponent values
+    // int default_exponents[7] = {123, 124, 125, 126, 127, 128, 129};
+    // int default_exponents[7] = {123, 124, 125, 126, 127, 128, 130};
+    int default_exponents[7] = {116, 117, 118, 119, 121, 120, 122};
 
+
+    
+    // Use default values if no custom exponents provided
+    const int* target_exponents = custom_exponents ? custom_exponents : default_exponents;
+    
+    // Set decreasing probability distribution for exponents
+    // Weights are {7, 6, 5, 4, 3, 2, 1}, sum = 28
+    double weights[7] = {8.0, 7.0, 5.0, 4.0, 3.0, 2.0, 1.0};
+    double total_weight = 30.0;  // 7+6+5+4+3+2+1
+    
+    // Initialize random number generator with fixed seed for reproducibility
+    std::mt19937 gen(seed);
+    std::uniform_real_distribution<float> dist_mantissa(0.0f, 1.0f);
+    std::uniform_int_distribution<int> dist_sign(0, 1);
+    std::uniform_real_distribution<double> dist_weighted(0.0, total_weight);
+    
+    // Exponent distribution probability: 97% use target exponents, 3% use random exponents
+    std::uniform_real_distribution<float> dist_exp_choice(0.0f, 1.0f);
+    std::uniform_int_distribution<int> dist_random_exp(110, 121);  // General BF16 exponent range
+    
+    // Initialize A - generate matrix with specific exponent distribution
+    for (int i = 0; i < M; i++) {
+        for (int j = 0; j < K; j++) {
+            uint8_t sign = dist_sign(gen);
+            // uint8_t sign = 1;
+            uint8_t mantissa = (uint8_t)(dist_mantissa(gen) * 127);
+            uint8_t exponent;
+            
+            // 97% probability to use high-frequency exponents
+            if (dist_exp_choice(gen) < 0.95f) {
+                // Use weighted random selection
+                double rand_val = dist_weighted(gen);
+                double cumulative = 0.0;
+                int idx = 0;
+                
+                // Find index corresponding to weight interval
+                for (int w = 0; w < 7; w++) {
+                    cumulative += weights[w];
+                    if (rand_val < cumulative) {
+                        idx = w;
+                        break;
+                    }
+                }
+                
+                exponent = target_exponents[idx];
+            } else {
+                exponent = dist_random_exp(gen);
+            }
+            
+            // Assemble into BF16 value
+            uint16_t bf16_bits = ((sign & 0x1) << 15) | ((exponent & 0xFF) << 7) | (mantissa & 0x7F);
+            A_h[i * K + j] = __ushort_as_bfloat16(bf16_bits);
+        }
+    }
+}
 
 // Calculate total error of BF16 matrix
 double ComputeTotalError_BF16(const __nv_bfloat16* A, const __nv_bfloat16* B, int M, int N) {
