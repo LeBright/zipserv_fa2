@@ -323,6 +323,20 @@ __global__ void compute_attn(int seqlen_q, int seqlen_kv, int seqlen_o,
     int n_block = n_block_max - 1;
     copy(tiled_cpy_g2s, tiled_cpy_g2s_thread_Ksrc(_, _, _, n_block), tiled_cpy_g2s_thread_Kdst);
     cute::cp_async_fence();
+    cp_async_wait<0>();
+    __syncthreads();
+
+    // [DBG] Q smem: thread0 持有的 Q_sharedmem 前8个元素 (row0, col0~7)
+    if (threadIdx.x == 0) {
+        printf("[DBG] Q_sharedmem[0,0~7]: ");
+        for (int i = 0; i < 8; i++)
+            printf("%.4f ", (float)Q_sharedmem(0, i));
+        printf("\n");
+        printf("[DBG] K_sharedmem[0,0~7]: ");
+        for (int i = 0; i < 8; i++)
+            printf("%.4f ", (float)K_sharedmem(0, i));
+        printf("\n");
+    }
 
     clear(tiled_mma_acc_O);
 
@@ -348,6 +362,14 @@ __global__ void compute_attn(int seqlen_q, int seqlen_kv, int seqlen_o,
              tiled_copy_s2r_Q, tiled_copy_s2r_K,                // tiled copy smem to reg for Q and K
              tiled_copy_s2r_thread_Q, tiled_copy_s2r_thread_K); // thread slice for tiled copy smem to reg for Q and K
 
+        // [DBG] acc_s: thread0 持有的注意力分数寄存器片段前8个元素 (Q*K^T, pre-softmax)
+        if (threadIdx.x == 0) {
+            printf("[DBG] n_block=%d acc_s(T0)[0~7]: ", n_block);
+            for (int i = 0; i < min(8, (int)size(acc_s)); i++)
+                printf("%.4f ", acc_s(i));
+            printf("\n");
+        }
+
         cp_async_wait<0>();
         __syncthreads();
 
@@ -367,6 +389,22 @@ __global__ void compute_attn(int seqlen_q, int seqlen_kv, int seqlen_o,
             softmax.template softmax_rescale_o<false>(acc_s, tiled_mma_acc_O, softmax_scale_log2);
         }
 
+        // [DBG] acc_s after softmax: thread0 持有的 softmax(S) 片段前8个元素
+        if (threadIdx.x == 0) {
+            printf("[DBG] n_block=%d acc_s after softmax(T0)[0~7]: ", n_block);
+            for (int i = 0; i < min(8, (int)size(acc_s)); i++)
+                printf("%.4f ", acc_s(i));
+            printf("\n");
+            printf("[DBG] n_block=%d row_max(T0)[0~3]: ");
+            for (int i = 0; i < min(4, (int)size(softmax.row_max)); i++)
+                printf("%.4f ", softmax.row_max(i));
+            printf("\n");
+            printf("[DBG] n_block=%d row_sum(T0)[0~3]: ");
+            for (int i = 0; i < min(4, (int)size(softmax.row_sum)); i++)
+                printf("%.4f ", softmax.row_sum(i));
+            printf("\n");
+        }
+
         // PV
         Tensor rP = convert_type<__nv_bfloat16>(acc_s);
         auto tOrP = make_tensor(rP.data(), convert_layout_acc_Aregs<TiledMma>(rP.layout()));
@@ -377,11 +415,27 @@ __global__ void compute_attn(int seqlen_q, int seqlen_kv, int seqlen_o,
                 tiled_mma,                // tiled mma
                 tiled_copy_s2r_V,         // tiled copy smem to reg for V
                 tiled_copy_s2r_thread_V); // thread slice for tiled copy smem to reg for V
+
+        // [DBG] acc_O after PV: thread0 持有的 O accumulator 片段前8个元素
+        if (threadIdx.x == 0) {
+            printf("[DBG] n_block=%d acc_O(T0)[0~7]: ", n_block);
+            for (int i = 0; i < min(8, (int)size(tiled_mma_acc_O)); i++)
+                printf("%.4f ", tiled_mma_acc_O(i));
+            printf("\n");
+        }
     }
 
     // Epilogue
 
     softmax.template normalize_softmax_lse(tiled_mma_acc_O, scale_softmax);
+
+    // [DBG] acc_O after normalize: thread0 持有的最终归一化后 O 片段前8个元素
+    if (threadIdx.x == 0) {
+        printf("[DBG] acc_O after normalize(T0)[0~7]: ");
+        for (int i = 0; i < min(8, (int)size(tiled_mma_acc_O)); i++)
+            printf("%.4f ", tiled_mma_acc_O(i));
+        printf("\n");
+    }
 
     // Convert acc_o from fp32 to fp16/bf16
     Tensor Oreg = convert_type<__nv_bfloat16>(tiled_mma_acc_O);
