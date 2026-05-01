@@ -398,7 +398,7 @@ __global__ void compute_attn(int seqlen_q, int seqlen_kv, int seqlen_o,
     Tensor mO = make_tensor(make_gmem_ptr(reinterpret_cast<__nv_bfloat16*>(O_ptr)
                                           + offset(batch_id, seqlen_o*HeadNum*HeadDim)),
                             make_shape(actual_seqlen_q, HeadNum, HeadDim),
-                            make_stride(seqlen_o*HeadNum*HeadDim, HeadDim, _1{}));
+                            make_stride(HeadNum*HeadDim, HeadDim, _1{}));
     Tensor gO = local_tile(mO(_, head_id, _), Shape<Int<kBlockM>, Int<HeadDim>>{},
                            make_coord(block_id, 0));  // (kBlockM, kHeadDim)
 
@@ -411,8 +411,8 @@ __global__ void compute_attn(int seqlen_q, int seqlen_kv, int seqlen_o,
 
     Tensor tOrO = make_tensor<__nv_bfloat16>(shape(tOgO));
 
-
-    copy(gmem_tiled_copy_O, tOrO, tOgO);
+    copy(gmem_tiled_copy_O, tOsO, tOrO);  // smem → reg
+    copy(gmem_tiled_copy_O, tOrO, tOgO);  // reg → gmem
 }
 
 
@@ -916,7 +916,7 @@ __global__ void compute_atten_zipserv(int seqlen_q, int seqlen_kv, int seqlen_o,
     Tensor mO = make_tensor(make_gmem_ptr(reinterpret_cast<__nv_bfloat16*>(O_ptr)
                                           + offset(batch_id, seqlen_o*HeadNum*HeadDim)),
                             make_shape(actual_seqlen_q, HeadNum, HeadDim),
-                            make_stride(seqlen_o*HeadNum*HeadDim, HeadDim, _1{}));
+                            make_stride(HeadNum*HeadDim, HeadDim, _1{}));
     Tensor gO = local_tile(mO(_, head_id, _), Shape<Int<kBlockM>, Int<HeadDim>>{},
                            make_coord(block_id, 0));  // (kBlockM, kHeadDim)
 

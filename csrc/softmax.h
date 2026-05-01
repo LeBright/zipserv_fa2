@@ -160,7 +160,7 @@ struct Softmax {
             scale_apply_exp2(scores, row_max, softmax_scale_log2);
             // We don't do the reduce across threads here since we don't need to use the row_sum.
             // We do that reduce at the end when we need to normalize the softmax.
-            reduce_sum(scores, row_sum);
+            reduce_sum(scores, row_sum, false);
         }
     };
 
