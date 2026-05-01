@@ -340,21 +340,10 @@ __global__ void compute_attn(int seqlen_q, int seqlen_kv, int seqlen_o,
     cp_async_wait<0>();
     __syncthreads();
 
-    // [DBG] Q smem: thread0 持有的 Q_sharedmem 前8个元素 (row0, col0~7)
-    if (threadIdx.x == 0) {
-        printf("[DBG] Q_sharedmem[0,0~7]: ");
-        for (int i = 0; i < 8; i++)
-            printf("%.4f ", (float)Q_sharedmem(0, i));
-        printf("\n");
-        printf("[DBG] K_sharedmem[0,0~7]: ");
-        for (int i = 0; i < 8; i++)
-            printf("%.4f ", (float)K_sharedmem(0, i));
-        printf("\n");
-    }
 
     clear(tiled_mma_acc_O);
 
-    Softmax<2 * size<1>(tiled_mma_acc_O)> softmax;
+    // Softmax<2 * size<1>(tiled_mma_acc_O)> softmax;
 
     for (; n_block >= n_block_min; --n_block) 
     {
@@ -386,36 +375,42 @@ __global__ void compute_attn(int seqlen_q, int seqlen_kv, int seqlen_o,
             cute::cp_async_fence();
         }
 
-        // softmax
-        if (n_block == n_block_max - 1)
-        {
-            softmax.template softmax_rescale_o<true>(acc_s, tiled_mma_acc_O, softmax_scale_log2);
-        }
-        else
-        {
-            softmax.template softmax_rescale_o<false>(acc_s, tiled_mma_acc_O, softmax_scale_log2);
-        }
+        // // softmax
+        // if (n_block == n_block_max - 1)
+        // {
+        //     softmax.template softmax_rescale_o<true>(acc_s, tiled_mma_acc_O, softmax_scale_log2);
+        // }
+        // else
+        // {
+        //     softmax.template softmax_rescale_o<false>(acc_s, tiled_mma_acc_O, softmax_scale_log2);
+        // }
 
-        // [DBG] acc_s after softmax: thread0 持有的 softmax(S) 片段前8个元素
+        // if (threadIdx.x == 0) {
+        //     printf("[DBG] n_block=%d acc_s after softmax(T0)[0~7]: ", n_block);
+        //     for (int i = 0; i < min(8, (int)size(acc_s)); i++)
+        //         printf("%.4f ", acc_s(i));
+        //     printf("\n");
+        //     printf("[DBG] n_block=%d row_max(T0)[0~3]: ");
+        //     for (int i = 0; i < min(4, (int)size(softmax.row_max)); i++)
+        //         printf("%.4f ", softmax.row_max(i));
+        //     printf("\n");
+        //     printf("[DBG] n_block=%d row_sum(T0)[0~3]: ");
+        //     for (int i = 0; i < min(4, (int)size(softmax.row_sum)); i++)
+        //         printf("%.4f ", softmax.row_sum(i));
+        //     printf("\n");
+        // }
+
+        // PV
+        Tensor rP = convert_type<__nv_bfloat16>(acc_s);
+        auto tOrP = make_tensor(rP.data(), convert_layout_acc_Aregs<TiledMma>(rP.layout()));
         if (threadIdx.x == 0) {
             printf("[DBG] n_block=%d acc_s after softmax(T0)[0~7]: ", n_block);
             for (int i = 0; i < min(8, (int)size(acc_s)); i++)
                 printf("%.4f ", acc_s(i));
             printf("\n");
-            printf("[DBG] n_block=%d row_max(T0)[0~3]: ");
-            for (int i = 0; i < min(4, (int)size(softmax.row_max)); i++)
-                printf("%.4f ", softmax.row_max(i));
-            printf("\n");
-            printf("[DBG] n_block=%d row_sum(T0)[0~3]: ");
-            for (int i = 0; i < min(4, (int)size(softmax.row_sum)); i++)
-                printf("%.4f ", softmax.row_sum(i));
-            printf("\n");
         }
-
-        // PV
-        Tensor rP = convert_type<__nv_bfloat16>(acc_s);
-        auto tOrP = make_tensor(rP.data(), convert_layout_acc_Aregs<TiledMma>(rP.layout()));
-
+        cp_async_wait<0>();
+        __syncthreads();
         gemm_rs(tiled_mma_acc_O,          
                 tOrP,                     
                 tiled_mma_thread_V,       
@@ -436,7 +431,7 @@ __global__ void compute_attn(int seqlen_q, int seqlen_kv, int seqlen_o,
 
     // Epilogue
 
-    softmax.template normalize_softmax_lse(tiled_mma_acc_O, scale_softmax);
+    // softmax.template normalize_softmax_lse(tiled_mma_acc_O, scale_softmax);
 
 
     if (threadIdx.x == 0) {
