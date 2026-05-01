@@ -79,6 +79,13 @@ template<typename Tensor0, typename Tensor1, typename Tensor2, typename Tensor3,
 __forceinline__ __device__ void gemm_rs(Tensor0 &acc, Tensor1 &tCrA, Tensor2 &tCrB, Tensor3 const& tCsB,
                                TiledMma tiled_mma, TiledCopy smem_tiled_copy_B,
                                ThrCopy smem_thr_copy_B) {
+    if (threadIdx.x == 0) 
+    {
+        printf("[DBG] n_block=%d tCsB_after(T0)[0~7]: ", 0);
+        for (int i = 0; i < min(8, (int)size(tCsB)); i++)
+            printf("%.4f ", tCsB(i));
+        printf("\n");
+    }
     CUTE_STATIC_ASSERT_V(size<1>(tCrA) == size<1>(acc));                     // MMA_M
     CUTE_STATIC_ASSERT_V(size<1>(tCrB) == size<2>(acc));                     // MMA_N
     CUTE_STATIC_ASSERT_V(size<2>(tCrA) == size<2>(tCrB));                     // MMA_K
@@ -89,6 +96,13 @@ __forceinline__ __device__ void gemm_rs(Tensor0 &acc, Tensor1 &tCrA, Tensor2 &tC
     for (int i = 0; i < size<2>(tCrA); ++i) {
         if (i < size<2>(tCrA) - 1) {
             cute::copy(smem_tiled_copy_B, tCsB(_, _, i + 1), tCrB_copy_view(_, _, i + 1));
+        }
+        if (threadIdx.x == 0) 
+        {
+            printf("[DBG] n_block=%d tCrB(T0)[0~7]: ", 0);
+            for (int i = 0; i < min(8, (int)size(tCrB_copy_view)); i++)
+                printf("%.4f ", tCrB_copy_view(i));
+            printf("\n");
         }
         cute::gemm(tiled_mma, tCrA(_, _, i), tCrB(_, _, i), acc);
     }
@@ -362,14 +376,7 @@ __global__ void compute_attn(int seqlen_q, int seqlen_kv, int seqlen_o,
              tiled_copy_s2r_Q, tiled_copy_s2r_K,                // tiled copy smem to reg for Q and K
              tiled_copy_s2r_thread_Q, tiled_copy_s2r_thread_K); // thread slice for tiled copy smem to reg for Q and K
 
-        // [DBG] acc_s: thread0 持有的注意力分数寄存器片段前8个元素 (Q*K^T, pre-softmax)
-        if (threadIdx.x == 0) {
-            printf("[DBG] n_block=%d acc_s(T0)[0~7]: ", n_block);
-            for (int i = 0; i < min(8, (int)size(acc_s)); i++)
-                printf("%.4f ", acc_s(i));
-            printf("\n");
-        }
-
+    
         cp_async_wait<0>();
         __syncthreads();
 
@@ -408,15 +415,17 @@ __global__ void compute_attn(int seqlen_q, int seqlen_kv, int seqlen_o,
         // PV
         Tensor rP = convert_type<__nv_bfloat16>(acc_s);
         auto tOrP = make_tensor(rP.data(), convert_layout_acc_Aregs<TiledMma>(rP.layout()));
-        gemm_rs(tiled_mma_acc_O,          // acc
-                tOrP,                     // reg P
-                tiled_mma_thread_V,       // reg V
-                tiled_cpy_s2r_Vsrc,       // smem V
-                tiled_mma,                // tiled mma
-                tiled_copy_s2r_V,         // tiled copy smem to reg for V
-                tiled_copy_s2r_thread_V); // thread slice for tiled copy smem to reg for V
 
-        // [DBG] acc_O after PV: thread0 持有的 O accumulator 片段前8个元素
+        gemm_rs(tiled_mma_acc_O,          
+                tOrP,                     
+                tiled_mma_thread_V,       
+                tiled_cpy_s2r_Vsrc,       
+                tiled_mma,                
+                tiled_copy_s2r_V,         
+                tiled_copy_s2r_thread_V); 
+
+
+
         if (threadIdx.x == 0) {
             printf("[DBG] n_block=%d acc_O(T0)[0~7]: ", n_block);
             for (int i = 0; i < min(8, (int)size(tiled_mma_acc_O)); i++)
@@ -429,7 +438,7 @@ __global__ void compute_attn(int seqlen_q, int seqlen_kv, int seqlen_o,
 
     softmax.template normalize_softmax_lse(tiled_mma_acc_O, scale_softmax);
 
-    // [DBG] acc_O after normalize: thread0 持有的最终归一化后 O 片段前8个元素
+
     if (threadIdx.x == 0) {
         printf("[DBG] acc_O after normalize(T0)[0~7]: ");
         for (int i = 0; i < min(8, (int)size(tiled_mma_acc_O)); i++)
@@ -439,6 +448,13 @@ __global__ void compute_attn(int seqlen_q, int seqlen_kv, int seqlen_o,
 
     // Convert acc_o from fp32 to fp16/bf16
     Tensor Oreg = convert_type<__nv_bfloat16>(tiled_mma_acc_O);
+
+    if (threadIdx.x == 0) {
+        printf("[DBG] Oreg after convert_type(T0)[0~7]: ");
+        for (int i = 0; i < min(8, (int)size(Oreg)); i++)
+            printf("%.4f ", __bfloat162float(Oreg(i)));
+        printf("\n");
+    }
     Tensor Osmem = make_tensor(Q_sharedmem.data(), SmemLayoutO{});    // (SMEM_M,SMEM_N)
 
     auto smem_tiled_copy_O = make_tiled_copy_C(SmemCopyAtomO{}, tiled_mma);
@@ -464,8 +480,8 @@ __global__ void compute_attn(int seqlen_q, int seqlen_kv, int seqlen_o,
     __syncthreads();
 
     Tensor tOrO = make_tensor<__nv_bfloat16>(shape(tOgO));
+    cute::copy(gmem_tiled_copy_O, tOsO, tOrO);  // smem → reg
 
-    copy(gmem_tiled_copy_O, tOsO, tOrO);  // smem → reg
     copy(gmem_tiled_copy_O, tOrO, tOgO);  // reg → gmem
 }
 

@@ -56,14 +56,14 @@ void print_bf16_matrix(const char* name, __nv_bfloat16* matrix, int rows, int co
 }
 int main()
 {
-    int Wq_M_GLOBAL = 128;
-    int Wq_N_GLOBAL = 128;
-    int Wk_M_GLOBAL = 128;
-    int Wk_N_GLOBAL = 128;
-    int Wv_M_GLOBAL = 128;
-    int Wv_N_GLOBAL = 128;
-    int X_M_GLOBAL = 128;
-    int X_N_GLOBAL = 128;
+    int Wq_M_GLOBAL = 64;
+    int Wq_N_GLOBAL = 64;
+    int Wk_M_GLOBAL = 64;
+    int Wk_N_GLOBAL = 64;
+    int Wv_M_GLOBAL = 64;
+    int Wv_N_GLOBAL = 64;
+    int X_M_GLOBAL = 64;
+    int X_N_GLOBAL = 64;
 
     int SPLIT_K = 1;
 
@@ -609,7 +609,7 @@ int main()
     int shared_mem_size = (kBlockM * HeadDim * sizeof(__nv_bfloat16)) * 5; 
     compute_attn<<<gridDim, blockDim, shared_mem_size>>>(
         Wq_M_GLOBAL, Wk_M_GLOBAL, Wq_M_GLOBAL,Wq_M_GLOBAL,Wk_M_GLOBAL,
-        Q_device,K_device,V_device,O_device,0,0.125f);
+        Q_device_cublas,K_device_cublas,V_device_cublas,O_device,0,0.125f);
     // compute_atten_zipserv<<<gridDim, blockDim, shared_mem_size>>>(
     //                         Wq_M_GLOBAL, Wk_M_GLOBAL, Wq_M_GLOBAL,
     //                         Wq_M_GLOBAL, Wq_M_GLOBAL,
@@ -642,7 +642,7 @@ int main()
     //                         Wk_M_GLOBAL,
     //                         X_N_GLOBAL,
     //                         Wk_N_GLOBAL);
-    cudaMemcpy(O_host, O_device, sizeof(__nv_bfloat16) * Wq_M_GLOBAL * X_N_GLOBAL, cudaMemcpyDeviceToHost); 
+    cudaMemcpy(O_host, O_device, sizeof(__nv_bfloat16) * 64 * 64, cudaMemcpyDeviceToHost); 
     print_bf16_matrix("Output O", O_host, Wq_M_GLOBAL, X_N_GLOBAL);
 
     return 0;
