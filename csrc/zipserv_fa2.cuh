@@ -747,6 +747,7 @@ __device__ void BF16TripleBitmap_MM_Kernel_prapareQKV(
 
     __syncthreads();
 }
+
 __global__ void compute_atten_zipserv(int seqlen_q, int seqlen_kv, int seqlen_o,
                              int actual_seqlen_q, int actual_seqlen_kv,
                              __nv_bfloat16* Q_ptr, __nv_bfloat16* K_ptr, __nv_bfloat16* V_ptr, __nv_bfloat16* O_ptr,
