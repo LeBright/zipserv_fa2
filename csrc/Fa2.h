@@ -62,18 +62,24 @@ using GmemTiledCopyO = decltype(make_tiled_copy(Copy_Atom<AutoVectorizingCopyWit
 // │  SmemLayoutAtom #8           │  ← 8×64
 // └──────────────────────────────┘
 
-using SmemLayoutAtomQKV = decltype(composition(Swizzle<kSwizzle, 3, 3>{},          // use composition for swizzle
-                                               Layout<Shape<_8, Int<kBlockKSmem>>, // swizzle only support 8 rows, so we have to split 64 rows into 8 groups, each group has 8 rows
-                                               Stride<Int<kBlockKSmem>, _1>>{}));
+// using SmemLayoutAtomQKV = decltype(composition(Swizzle<kSwizzle, 3, 3>{},          // use composition for swizzle
+//                                                Layout<Shape<_8, Int<kBlockKSmem>>, // swizzle only support 8 rows, so we have to split 64 rows into 8 groups, each group has 8 rows
+//                                                Stride<Int<kBlockKSmem>, _1>>{}));
 using SmemLayoutAtomO = decltype(composition(Swizzle<kSwizzle, 3, 3>{},
                                              Layout<Shape<_8, Int<kBlockKSmem>>,
                                              Stride<Int<kBlockKSmem>, _1>>{}));
-
-using SmemLayoutQ = decltype(tile_to_shape(SmemLayoutAtomQKV{}, 
+using SmemLayoutAtom = decltype(composition(Swizzle(kSwizzle, 3, 3){},
+                                            Layout<Shape<_8, Int<HeadDim>>,
+                                            Stride<Int<HeadDim>, _1>>{}));
+using SmemLayoutQ = decltype(tile_to_shape(SmemLayoutAtom{}, 
                                            Shape<Int<kBlockM>, Int<HeadDim>>{}));// 8 groups of 8*64 compose to 64*64
-using SmemLayoutKV = decltype(tile_to_shape(SmemLayoutAtomQKV{}, 
-                                           Shape<Int<kBlockN>, Int<HeadDim>>{}));
-using SmemLayoutVtransposed = decltype(composition(SmemLayoutKV{}, 
+using SmemLayoutK = decltype(tile_to_shape(SmemLayoutAtom{}, 
+                                           Shape<Int<kBlockN>, Int<HeadDim>>{})); // 8*64
+using SmemLayoutV = decltype(tile_to_shape(SmemLayoutAtom{}, 
+                                           Shape<Int<kBlockN>, Int<HeadDim>>{})); // 8*64
+// using SmemLayoutKV = decltype(tile_to_shape(SmemLayoutAtomQKV{}, 
+//                                            Shape<Int<kBlockN>, Int<HeadDim>>{}));
+using SmemLayoutVtransposed = decltype(composition(SmemLayoutV{}, 
                                                    make_layout(Shape<Int<HeadDim>, Int<kBlockN>>{}, 
                                                                GenRowMajor{})));                   // default is col major
 using SmemLayoutVtransposedNoSwizzle = decltype(get_nonswizzle_portion(SmemLayoutVtransposed{}));
