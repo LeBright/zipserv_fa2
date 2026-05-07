@@ -480,7 +480,21 @@ __global__ void compute_attn(int seqlen_q, int seqlen_kv, int seqlen_o,
     copy(gmem_tiled_copy_O, tOrO, tOgO);  // reg → gmem
 }
 
+__global__ void compute_attn_v2(void* O, 
+                                const void* Q, const void* K, const void* V, 
+                                int q_len, int k_len, int v_len, 
+                                int head_stride, 
+                                float sm_scale)
+{
+    const int Q_block_id = blockIdx.x; 
+    const int Head_id = blockIdx.y;
+    const int tidx = threadIdx.x;    
 
+    extern __shared__ __nv_bfloat16 smem[];
+    auto Q_smem = smem;
+    auto K_smem = Q_smem + cosize(SmemLayoutQ{});
+    auto V_smem = K_smem + cosize(SmemLayoutK{});
+}
 
 // A*B=C
 // B in global, transposed

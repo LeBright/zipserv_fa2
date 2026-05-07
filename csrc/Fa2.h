@@ -17,7 +17,7 @@ using namespace cute;
 #define ColWarps 4
 #define RowWarps 4
 #define kNWarps (ColWarps * RowWarps)
-#define kNThreads (ColWarps * RowWarps * 32) // 512 threads per block
+#define kNThreads (kNWarps * 32) // 512 threads per block
 #define KGmemElemensPerLoad (sizeof(cute::uint128_t) / sizeof(__nv_bfloat16)) // 128/16=8：load 8 elements each time (per thread)
 #define kGmemThreadsPerRow (kBlockKSmem / KGmemElemensPerLoad) // 64/8=8: load one row need 8 threads
 
@@ -79,10 +79,10 @@ using SmemLayoutV = decltype(tile_to_shape(SmemLayoutAtom{},
                                            Shape<Int<kBlockN>, Int<HeadDim>>{})); // 8*64
 // using SmemLayoutKV = decltype(tile_to_shape(SmemLayoutAtomQKV{}, 
 //                                            Shape<Int<kBlockN>, Int<HeadDim>>{}));
-using SmemLayoutVtransposed = decltype(composition(SmemLayoutV{}, 
+using SmemLayoutVt = decltype(composition(SmemLayoutV{}, 
                                                    make_layout(Shape<Int<HeadDim>, Int<kBlockN>>{}, 
                                                                GenRowMajor{})));                   // default is col major
-using SmemLayoutVtransposedNoSwizzle = decltype(get_nonswizzle_portion(SmemLayoutVtransposed{}));
+using SmemLayoutVtNoSwizzle = decltype(get_nonswizzle_portion(SmemLayoutVt{}));
 using SmemLayoutO = decltype(tile_to_shape(SmemLayoutAtomO{},
                                            Shape<Int<kBlockM>, Int<HeadDim>>{}));
 
