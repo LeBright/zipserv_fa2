@@ -482,18 +482,115 @@ __global__ void compute_attn(int seqlen_q, int seqlen_kv, int seqlen_o,
 
 __global__ void compute_attn_v2(void* O, 
                                 const void* Q, const void* K, const void* V, 
-                                int q_len, int k_len, int v_len, 
+                                int q_len, int k_len, int v_len,  int o_len,
                                 int head_stride, 
                                 float sm_scale)
 {
-    const int Q_block_id = blockIdx.x; 
-    const int Head_id = blockIdx.y;
+    const int m_block = blockIdx.x; // one block process Q_len/kBlockM (AKA N/Br in fa2 paper ) m_blocks 
+    const int base_id = blockIdx.y; // it tells us the block process which head(base_id%headnum) of which batch(base_id/headnum) 
     const int tidx = threadIdx.x;    
 
     extern __shared__ __nv_bfloat16 smem[];
-    auto Q_smem = smem;
-    auto K_smem = Q_smem + cosize(SmemLayoutQ{});
-    auto V_smem = K_smem + cosize(SmemLayoutK{});
+    auto Q_smem_ptr = smem;
+    auto K_smem_ptr = Q_smem_ptr + cosize(SmemLayoutQ{});
+    auto V_smem_ptr = K_smem_ptr + cosize(SmemLayoutK{});
+
+    auto base_offset = base_id * head_stride;
+
+    auto Q = make_tensor(make_gmem_ptr(Q_ptr + base_offset),
+                         make_shape(Int<q_len>{},Int<HeadDim>{}),
+                         make_stride(Int<HeadDim>{}, _1{}));
+    auto K = make_tensor(make_gmem_ptr(K_ptr + base_offset),
+                        make_shape(Int<k_len>{},Int<HeadDim>{}),
+                        make_stride(Int<HeadDim>{}, _1{}));
+    auto V = make_tensor(make_gmem_ptr(V_ptr + base_offset),
+                        make_shape(Int<v_len>{},Int<HeadDim>{}),
+                        make_stride(Int<HeadDim>{}, _1{}));
+    auto O = make_tensor(make_gmem_ptr(O_ptr + base_offset),
+                        make_shape(Int<o_len>{},Int<HeadDim>{}),
+                        make_stride(Int<HeadDim>{}, _1{}));
+
+    // global memory
+    auto gQ = local_tile(Q, 
+                             make_tile(Shape<Int<kBlockM>, Int<HeadDim>>{}),
+                             make_coord(m_block, _));
+    auto gK = local_tile(K,
+                             make_tile(shape<Int<kBlockN>, Int<HeadDim>>{}),
+                             make_coord(0, _));
+    auto gV = local_tile(V,
+                             make_tile(shape<Int<kBlockN>, Int<HeadDim>>{}),
+                             make_coord(0, _));
+    
+    // shared memory
+    auto sQ = make_tensor(make_smem_ptr<__nv_bfloat16>(Q_smem_ptr), SmemLayoutQ{});
+    auto sK = make_tensor(make_smem_ptr<__nv_bfloat16>(K_smem_ptr), SmemLayoutK{});
+    auto sV = make_tensor(make_smem_ptr<__nv_bfloat16>(V_smem_ptr), SmemLayoutV{});
+    auto sVt = make_tensor(make_smem_ptr<__nv_bfloat16>(V_smem_ptr), SmemLayoutVt{});
+    auto sVtNoSwizzle = make_tensor(make_smem_ptr<__nv_bfloat16>(V_smem_ptr), SmemLayoutVtNoSwizzle{});
+
+    // global memory to shared memory copy
+    GmemTiledCopyQKV gmem_tiled_copy_QKV;
+    auto gmem_thr_copy_QKV = gmem_tiled_copy_QKV.get_thread_slice(tidx);
+    auto tQgQ = gmem_thr_copy_QKV.partition_S(gQ(_, _, 0));
+    auto tQsQ = gmem_thr_copy_QKV.partition_D(sQ);
+    auto tKgK = gmem_thr_copy_QKV.partition_S(gK(_, _, 0));
+    auto tKsK = gmem_thr_copy_QKV.partition_D(sK);
+    auto tVgV = gmem_thr_copy_QKV.partition_S(gV(_, _, 0));
+    auto tVsV = gmem_thr_copy_QKV.partition_D(sV);
+
+    // register
+    TiledMMA tiled_mma;
+    auto thr_mma = tiled_mma.get_thread_slice(tidx);
+    auto tSrQ = thr_mma.partition_fragment_A(sQ);             
+    auto tSrK = thr_mma.partition_fragment_B(sK);             
+    auto tOrVt = thr_mma.partition_fragment_B(sVtNoSwizzle);  
+
+    // shared memory to register copy
+    auto smem_tiled_copy_Q = make_tiled_copy_A(SmemCopyAtom{}, tiled_mma);
+    auto smem_thr_copy_Q = smem_tiled_copy_Q.get_thread_slice(tidx);
+    auto tSsQ = smem_thr_copy_Q.partition_S(sQ);
+    auto tSrQ_view = smem_thr_copy_Q.retile_D(tSrQ);
+
+    auto smem_tiled_copy_K = make_tiled_copy_B(SmemCopyAtom{}, tiled_mma);
+    auto smem_thr_copy_K = smem_tiled_copy_K.get_thread_slice(tidx);
+    auto tSsK = smem_thr_copy_K.partition_S(sK);
+    auto tSrK_view = smem_thr_copy_K.retile_D(tSrK);
+
+    auto smem_tiled_copy_V = make_tiled_copy_B(SmemCopyAtomTransposed{}, tiled_mma);
+    auto smem_thr_copy_V = smem_tiled_copy_V.get_thread_slice(tidx);
+    auto tOsVt = smem_thr_copy_V.partition_S(sVt);
+    auto tOrVt_view = smem_thr_copy_V.retile_D(tOrVt);
+    
+    // copy Q
+    cute::copy(gmem_tiled_copy_QKV, tQgQ, tQsQ);
+    cp_async_fence();
+    cp_async_wait<0>();
+    __syncthreads();
+
+    // multiply sm scale
+    __nv_bfloat162 sm_bf162 = make_bfloat162(__float2bfloat16_rn(sm_scale), __float2bfloat16_rn(sm_scale));
+    auto tQsQ_int4 = recast<int4>(tQsQ);
+    #pragma unroll
+    for(int i=0;i<size(tQsQ_int4);i++)
+    {
+        auto tmp = tQsQ_int4(i);
+        auto tmp_bf162 = (__nv_bfloat162*)&tmp;
+        #pragma unroll
+        for(int j=0;j<4;j++)
+        {
+            tmp_bf162[j] = __hmul2(sm_bf162, tmp_bf162[j]);
+        }
+        tQsQ_int4(i) = tmp;
+    }
+
+    // copy KV
+    cute::copy(gmem_tiled_copy_QKV, tKgK, tKsK);
+    cp_async_fence();
+    cute::copy(gmem_tiled_copy_QKV, tVgV, tVsV);
+    cp_async_fence();   
+
+    auto rAccOut = partition_fragment_C(tiled_mma, Shape<Int<kBlockM>, Int<kBlockN>>{});
+    auto scores_max = make_tensor<float>(Shape<Int<2 * size<1>(rAccOut)>>{});  // (2*MMA_M)
 }
 
 // A*B=C
