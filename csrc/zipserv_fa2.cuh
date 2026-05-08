@@ -512,14 +512,14 @@ __global__ void compute_attn_v2(void* O,
 
     // global memory
     auto gQ = local_tile(Q, 
-                             make_tile(Shape<Int<kBlockM>, Int<HeadDim>>{}),
-                             make_coord(m_block, _));
+                         make_tile(Shape<Int<kBlockM>, Int<HeadDim>>{}),
+                         make_coord(m_block, _));
     auto gK = local_tile(K,
-                             make_tile(shape<Int<kBlockN>, Int<HeadDim>>{}),
-                             make_coord(0, _));
+                         make_tile(shape<Int<kBlockN>, Int<HeadDim>>{}),
+                         make_coord(0, _));
     auto gV = local_tile(V,
-                             make_tile(shape<Int<kBlockN>, Int<HeadDim>>{}),
-                             make_coord(0, _));
+                         make_tile(shape<Int<kBlockN>, Int<HeadDim>>{}),
+                         make_coord(0, _));
     
     // shared memory
     auto sQ = make_tensor(make_smem_ptr<__nv_bfloat16>(Q_smem_ptr), SmemLayoutQ{});
@@ -541,9 +541,9 @@ __global__ void compute_attn_v2(void* O,
     // register
     TiledMMA tiled_mma;
     auto thr_mma = tiled_mma.get_thread_slice(tidx);
-    auto tSrQ = thr_mma.partition_fragment_A(sQ);             
-    auto tSrK = thr_mma.partition_fragment_B(sK);             
-    auto tOrVt = thr_mma.partition_fragment_B(sVtNoSwizzle);  
+    auto tSrQ = thr_mma.partition_fragment_A(sQ);             // (MMA,MMA_M,MMA_K)
+    auto tSrK = thr_mma.partition_fragment_B(sK);             // (MMA,MMA_N,MMA_K)
+    auto tOrVt = thr_mma.partition_fragment_B(sVtNoSwizzle);  // (MMA,MMA_K,MMA_N)
 
     // shared memory to register copy
     auto smem_tiled_copy_Q = make_tiled_copy_A(SmemCopyAtom{}, tiled_mma);
@@ -589,8 +589,131 @@ __global__ void compute_attn_v2(void* O,
     cute::copy(gmem_tiled_copy_QKV, tVgV, tVsV);
     cp_async_fence();   
 
-    auto rAccOut = partition_fragment_C(tiled_mma, Shape<Int<kBlockM>, Int<kBlockN>>{});
+    auto rAccOut = partition_fragment_C(tiled_mma, Shape<Int<kBlockM>, Int<HeadDim>>{});
     auto scores_max = make_tensor<float>(Shape<Int<2 * size<1>(rAccOut)>>{});  // (2*MMA_M)
+    auto scores_sum = make_fragment_like(scores_max);
+    auto rAccScore = partition_fragment_C(tiled_mma, Shape<Int<kBlockM>, Int<kBlockN>>{});
+    clear(rAccOut);
+
+    #pragma unroll
+    for (int i=0;i<size(rAccScore);i++) 
+    {
+        scores_max(i) = -FLT_MAX;
+        scores_sum(i) = 0;
+    }
+
+    auto ol = logical_divide(rAccOut.layout(), Shape<Int<2>>{});
+    auto rAccOut_new_layout = make_layout(make_layout(get<1>(get<0>(ol)),get<1>(ol)),
+                                          make_layout(get<0>(get<0>(ol)),get<2>(ol)));
+    auto rAccOut_new = make_tensor(rAccOut.data(), rAccOut_new_layout);
+
+    int n_block_min = 0;
+    int n_block_max = cute::ceil_div(k_len, kBlockN);
+
+    #pragma unroll 1
+    for(int i = n_block_min; i < n_block_max; i++)
+    {
+        clear(rAccScore);
+
+        // wait K
+        cp_asyc_wait<1>();
+        __syncthreads();
+
+        // S=QK^T
+        cute::copy(smem_tiled_copy_Q, tSsQ(_, _, Int<0>{}), tSrQ_view(_, _, Int<0>{}));
+        cute::copy(smem_tiled_copy_K, tSsK(_, _, Int<0>{}), tSrK_view(_, _, Int<0>{}));
+
+        #pragma unroll
+        for(int j=0;j<size<2>(tSrQ);j++)
+        {
+            if(j<size<2>(tsrQ)-1)
+            {
+                cute::copy(smem_tiled_copy_Q, tSsQ(_, _, j+1), tSrQ_view(_, _, j+1));
+                cute::copy(smem_tiled_copy_K, tSsK(_, _, j+1), tSrK_view(_, _, j+1));
+            }
+            cute::gemm(tiledmma, tSrQ(_, _, j), tSrK(_, _, j), rAccScore);
+        }
+
+        auto sl = logical_divide(rAccScore.layout(), Shape<Int<2>>{});
+        auto rAccScore_new_layout = make_layout(make_layout(get<1>(get<0>(sl)),get<1>(sl)),
+                                                make_layout(get<0>(get<0>(sl)),get<2>(sl)));
+        auto scores = make_tensor(rAccScore.data(), rAccScore_new_layout);
+
+        // softmax
+        auto scores_max_pre = make_fragment_like(scores_max); // m(j-1)
+        cute::copy(scores_max, scores_max_pre);
+
+        #pragma unroll
+        for(int i=0;i<size<0>(scores);i++)
+        {
+            float scores_max_i = scores_max(i);
+            float scores_sum_i = scores_sum(i);
+
+            // m(j) = max(m(j-1), rowmax(S(j)))
+            #pragma unroll
+            for(int j=0;j<size<1>(scores);j++)
+            {
+                scores_max_i = max(scores_max_i, scores(i, j));
+            }
+            scores_max_i = max(scores_max_i, __shfl_xor_sync(0xffffffff, scores_max_i, 0x2));
+            scores_max_i = max(scores_max_i, __shfl_xor_sync(0xffffffff, scores_max_i, 0x1));
+
+            // e^(m(j-1) - m(j))
+            float scores_scale = exp2f(scores_max_pre(i) - scores_max_i);
+
+            // key value: diag(e^(m(j-1)-m(j))) * O(j-1)
+            #pragma unroll
+            for(int j=0;j<size<1>(rAccOut_new);j++)
+            {
+                rAccOut_new(i, j) *= scores_scale;
+            }
+
+            float scores_sum_cur_i = 0;
+            #pragma unroll
+            for(int j=0;j<size<1>(scores);j++)
+            {
+                // P(j) = e^(S(j) - m(j))
+                scores(i, j) = exp2f(scores(i, j) - scores_max_i);
+
+                // rowsum(P(j))
+                scores_sum_cur_i += scores(i, j);
+            }
+            scores_sum_cur_i += __shfl_xor_sync(0xffffffff, scores_sum_cur_i, 0x2);
+            scores_sum_cur_i += __shfl_xor_sync(0xffffffff, scores_sum_cur_i, 0x1);
+            
+            // key value: l(j) = l(j-1) * e^(m(j-1) - m(j)) + rowsum(P(j))
+            scores_sum_i = scores_sum_i * scores_scale + scores_sum_cur_i;
+        }
+        __syncthreads();
+
+        if(i<n_block_max-1)
+        {
+            gK = local_tile(K, make_tile(Int<kBlockN>{}, Int<kHeadDim>{}),
+                       make_coord(i+1, _));
+            tKgK = gmem_thr_copy_QKV.partition_S(gK(_, _, 0));
+            cute::copy(gmem_tiled_copy_QKV, tKgK, tKsK);
+        }
+        cp_async_fence();
+
+        // wait v
+        cp_async_wait<1>();
+        __syncthreads();
+
+        auto scores_bf16 = make_tensor_like<__nv_bfloat16>(scores);
+        auto scores_fp32x2 = recast<float2>(scores);
+        auto scores_bf162 = make_tensor_like<__nv_bfloat162>(scores);
+        #pragma unroll
+        for(int j=0;j<size(scores_bf162);j++)
+        {
+            scores_bf162(i) = __float22bf162_rn(scores_fp32x2(i));
+        }
+
+        auto l = logical_divide(scores.layout(), Shape<_, Shape<_, Int<2>>>{});
+        auto scores_new_layout =make_layout(make_layout(get<0>(get<1>(l)), get<0>(get<0>(l)),
+                                                        get<0>(get<1>(get<1>(l)))),
+                                                        get<1>(get<0>(l)), get<1>(get<1>(get<1>(l))));
+        auto tOrS = make_tensor(scores_fp16.data(), scores_new_layout);
+    }
 }
 
 // A*B=C
