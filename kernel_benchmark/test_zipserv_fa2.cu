@@ -4,26 +4,26 @@
 #include "L_API.cuh"
 #include "utils.h"
 
-int test_empty_kernel() {
-    // 假设每个参数都用最小合法值
-    int seqlen_q = 1, seqlen_kv = 1, seqlen_o = 1, actual_seqlen_q = 1, actual_seqlen_kv = 1;
-    __nv_bfloat16 *Q = nullptr, *K = nullptr, *V = nullptr, *O = nullptr;
-    float softmax_scale_log2 = 1.0f, scale_softmax = 1.0f;
+// int test_empty_kernel() {
+//     // 假设每个参数都用最小合法值
+//     int seqlen_q = 1, seqlen_kv = 1, seqlen_o = 1, actual_seqlen_q = 1, actual_seqlen_kv = 1;
+//     __nv_bfloat16 *Q = nullptr, *K = nullptr, *V = nullptr, *O = nullptr;
+//     float softmax_scale_log2 = 1.0f, scale_softmax = 1.0f;
 
-    // 你可以根据 kernel 内部需求分配 device memory
-    // cudaMalloc(&Q, ...); cudaMalloc(&K, ...); cudaMalloc(&V, ...); cudaMalloc(&O, ...);
+//     // 你可以根据 kernel 内部需求分配 device memory
+//     // cudaMalloc(&Q, ...); cudaMalloc(&K, ...); cudaMalloc(&V, ...); cudaMalloc(&O, ...);
 
-    compute_attn<<<1, 32, 48*1024>>>(
-        seqlen_q, seqlen_kv, seqlen_o, actual_seqlen_q, actual_seqlen_kv,
-        Q, K, V, O, softmax_scale_log2, scale_softmax
-    );
+//     compute_attn<<<1, 32, 48*1024>>>(
+//         seqlen_q, seqlen_kv, seqlen_o, actual_seqlen_q, actual_seqlen_kv,
+//         Q, K, V, O, softmax_scale_log2, scale_softmax
+//     );
 
-    cudaDeviceSynchronize();
+//     cudaDeviceSynchronize();
 
-    printf("kernel launch done\\n");
-    // cudaFree(Q); cudaFree(K); cudaFree(V); cudaFree(O);
-    return 0;
-}
+//     printf("kernel launch done\\n");
+//     // cudaFree(Q); cudaFree(K); cudaFree(V); cudaFree(O);
+//     return 0;
+// }
 
 
 void print_bf16_matrix(const char* name, __nv_bfloat16* matrix, int rows, int cols, int max_rows = 128, int max_cols = 32) {
@@ -607,9 +607,9 @@ int main()
     dim3 gridDim(Wq_M_GLOBAL/kBlockM, 1, X_N_GLOBAL/HeadDim);
     dim3 blockDim(32*4,1,1);
     int shared_mem_size = (kBlockM * HeadDim * sizeof(__nv_bfloat16)) * 5; 
-    compute_attn<<<gridDim, blockDim, shared_mem_size>>>(
-        Wq_M_GLOBAL, Wk_M_GLOBAL, Wq_M_GLOBAL,Wq_M_GLOBAL,Wk_M_GLOBAL,
-        Q_device_cublas,K_device_cublas,V_device_cublas,O_device,0,0.125f);
+    compute_attn_v2<<<gridDim, blockDim, shared_mem_size>>>(
+        nullptr, nullptr, nullptr,nullptr,1,
+        1,1,1,1,0);
     // compute_atten_zipserv<<<gridDim, blockDim, shared_mem_size>>>(
     //                         Wq_M_GLOBAL, Wk_M_GLOBAL, Wq_M_GLOBAL,
     //                         Wq_M_GLOBAL, Wq_M_GLOBAL,
