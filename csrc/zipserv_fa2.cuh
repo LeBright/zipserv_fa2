@@ -497,16 +497,16 @@ __global__ void compute_attn_v2(void* O_ptr,
 
     auto base_offset = base_id * head_stride;
 
-    auto Q = make_tensor(make_gmem_ptr<__nv_bfloat16>(Q_ptr + base_offset),
+    auto Q = make_tensor(make_gmem_ptr<__nv_bfloat16>((__nv_bfloat16*)(Q_ptr) + base_offset),
                          make_shape(q_len,Int<HeadDim>{}),
                          make_stride(Int<HeadDim>{}, _1{}));
-    auto K = make_tensor(make_gmem_ptr<__nv_bfloat16>(K_ptr + base_offset),
+    auto K = make_tensor(make_gmem_ptr<__nv_bfloat16>((__nv_bfloat16*)(K_ptr) + base_offset),
                         make_shape(k_len,Int<HeadDim>{}),
                         make_stride(Int<HeadDim>{}, _1{}));
-    auto V = make_tensor(make_gmem_ptr<__nv_bfloat16>(V_ptr + base_offset),
+    auto V = make_tensor(make_gmem_ptr<__nv_bfloat16>((__nv_bfloat16*)(V_ptr) + base_offset),
                         make_shape(v_len,Int<HeadDim>{}),
                         make_stride(Int<HeadDim>{}, _1{}));
-    auto O = make_tensor(make_gmem_ptr<__nv_bfloat16>(O_ptr + base_offset),
+    auto O = make_tensor(make_gmem_ptr<__nv_bfloat16>((__nv_bfloat16*)(O_ptr) + base_offset),
                         make_shape(o_len,Int<HeadDim>{}),
                         make_stride(Int<HeadDim>{}, _1{}));
 
@@ -595,7 +595,7 @@ __global__ void compute_attn_v2(void* O_ptr,
     clear(rAccOut);
 
     #pragma unroll
-    for (int i=0;i<size(rAccScore);i++) 
+    for (int i=0;i<size(scores_max);i++) 
     {
         scores_max(i) = -FLT_MAX;
         scores_sum(i) = 0;
@@ -645,8 +645,8 @@ __global__ void compute_attn_v2(void* O_ptr,
         #pragma unroll
         for(int i=0;i<size<0>(scores);i++)
         {
-            float scores_max_i = scores_max(i);
-            float scores_sum_i = scores_sum(i);
+            float& scores_max_i = scores_max(i);
+            float& scores_sum_i = scores_sum(i);
 
             // m(j) = max(m(j-1), rowmax(S(j)))
             #pragma unroll

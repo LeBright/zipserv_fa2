@@ -608,8 +608,16 @@ int main()
     dim3 blockDim(32*4,1,1);
     int shared_mem_size = (kBlockM * HeadDim * sizeof(__nv_bfloat16)) * 5; 
     compute_attn_v2<<<gridDim, blockDim, shared_mem_size>>>(
-        nullptr, nullptr, nullptr,nullptr,1,
-        1,1,1,1,0);
+        O_device, 
+        Q_device_cublas, 
+        K_device_cublas,
+        V_device_cublas,
+        64,
+        64,
+        64,
+        64,
+        64*64,
+        0.125f);
     // compute_atten_zipserv<<<gridDim, blockDim, shared_mem_size>>>(
     //                         Wq_M_GLOBAL, Wk_M_GLOBAL, Wq_M_GLOBAL,
     //                         Wq_M_GLOBAL, Wq_M_GLOBAL,
