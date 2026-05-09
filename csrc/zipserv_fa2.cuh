@@ -696,12 +696,19 @@ __global__ void compute_attn_v2(void* O_ptr,
         cp_async_fence();
 
         // wait v
-        cp_async_wait<1>();
+        if (n_block < n_block_max - 1) 
+        {
+            cp_async_wait<1>();
+        } 
+        else 
+        {
+            cp_async_wait<0>();
+        }
         __syncthreads();
 
         auto scores_bf16 = make_tensor_like<__nv_bfloat16>(scores);
         auto scores_fp32x2 = recast<float2>(scores);
-        auto scores_bf162 = make_tensor_like<__nv_bfloat162>(scores);
+        auto scores_bf162 = recast<__nv_bfloat162>(scores_bf16);
         #pragma unroll
         for(int j=0;j<size(scores_bf162);j++)
         {
@@ -766,7 +773,7 @@ __global__ void compute_attn_v2(void* O_ptr,
     auto sO = make_tensor(sQ.data(), SmemLayoutO{});
     auto smem_tiled_copy_O = make_tiled_copy_C(SmemCopyAtomO{}, tiled_mma);
     auto smem_thr_copy_O = smem_tiled_copy_O.get_thread_slice(tidx);
-    auto taccOrO = smem_thr_copy_O.partition_S(rAccOut_bf16);
+    auto taccOrO = smem_thr_copy_O.retile_S(rAccOut_bf16);
     auto taccOsO = smem_thr_copy_O.partition_D(sO);
     cute::copy(smem_tiled_copy_O, taccOrO, taccOsO);
     

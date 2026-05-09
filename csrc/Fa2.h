@@ -14,10 +14,10 @@ using namespace cute;
 #define HeadDim 64
 #define kBlockKSmem (HeadDim % 64 == 0 ? 64 : 32)
 #define kSwizzle (kBlockKSmem == 32 ? 2 : 3)
-#define ColWarps 4
+#define ColWarps 1
 #define RowWarps 4
 #define kNWarps (ColWarps * RowWarps)
-#define kNThreads (kNWarps * 32) // 512 threads per block
+#define kNThreads (kNWarps * 32) // must match size(TiledMma)
 #define KGmemElemensPerLoad (sizeof(cute::uint128_t) / sizeof(__nv_bfloat16)) // 128/16=8：load 8 elements each time (per thread)
 #define kGmemThreadsPerRow (kBlockKSmem / KGmemElemensPerLoad) // 64/8=8: load one row need 8 threads
 
@@ -33,7 +33,7 @@ using namespace cute;
 // │    .     │    .     │    .     │   │    .     │
 // │   T504   │   T505   │   T506   │...│   T511   │
 // └──────────┴──────────┴──────────┴───┴──────────┘
-using GmemLayoutAtom = decltype(Layout<Shape<Int<kNThreads/kGmemThreadsPerRow>,Int<kGmemThreadsPerRow>>,// shape(64, 8)
+using GmemLayoutAtom = decltype(Layout<Shape<Int<kNThreads/kGmemThreadsPerRow>,Int<kGmemThreadsPerRow>>,// shape(16, 8) when kNThreads=128
                                 Stride<Int<kGmemThreadsPerRow>, _1>>{});
 using Gmem_copy_struct = SM80_CP_ASYNC_CACHEGLOBAL<cute::uint128_t>;
 using GmemTiledCopyQKV = decltype(make_tiled_copy(Copy_Atom<Gmem_copy_struct, __nv_bfloat16>{}, 
@@ -112,6 +112,9 @@ using SmemCopyAtomTransposed = Copy_Atom<SM75_U16x8_LDSM_T, __nv_bfloat16>;
 using TiledMma = TiledMMA<MMA_Atom<SM80_16x8x16_F32BF16BF16F32_TN>, 
                           Layout<Shape<_4,_1,_1>>, // warp arrangement
                           Tile<_64, _16, _16>>;
+
+static_assert(size(TiledMma{}) == kNThreads,
+              "kNThreads must match TiledMma thread count; update ColWarps/RowWarps or TiledMma layout");
 
 
 #endif
