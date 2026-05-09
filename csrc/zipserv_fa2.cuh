@@ -713,7 +713,73 @@ __global__ void compute_attn_v2(void* O_ptr,
                                                         get<0>(get<1>(get<1>(l)))),
                                                         get<1>(get<0>(l)), get<1>(get<1>(get<1>(l))));
         auto tOrS = make_tensor(scores_bf16.data(), scores_new_layout);
+
+        cute::copy(smem_tiled_copy_V, tOsVt(_, _, Int<0>{}),tOrVt_view(_, _, Int<0>{}));
+
+        #pragma unroll
+        for(int j=0;j<size<2>(tOrS);j++)
+        {
+            if(j<size<2>(tOrS)-1)
+            {
+                cute::copy(smem_tiled_copy_V, tOsVt(_, _, j+1), tOrVt_view(_, _, j+1));
+            }
+            cute::gemm(tiled_mma, tOrS(_, _, j), tOrVt(_, _, j), rAccOut);
+        }
+
+        __syncthreads();
+
+        if(n_block<n_block_max-1)
+        {
+            gV = local_tile(V, 
+                            make_tile(Int<kBlockN>{}, Int<HeadDim>{}),
+                            make_coord(n_block+1, _));
+            tVgV = gmem_thr_copy_QKV.partition_S(gV(_, _, 0));
+            cute::copy(gmem_tiled_copy_QKV, tVgV, tVsV);
+        }
+        cp_async_fence();
+    }   
+
+    #pragma unroll
+    for (int i = 0; i < size(scores_sum); i++) 
+    {
+        scores_sum(i) = __frcp_rn(scores_sum(i));
     }
+    #pragma unroll
+    for (int i = 0; i < size<0>(rAccOut_new); i++) 
+    {
+        #pragma unroll
+        for (int j = 0; j < size<1>(rAccOut_new); j++) 
+        {
+            rAccOut_new(i, j) *= scores_sum(i);
+        }
+    }
+
+    auto rAccOut_bf16 = make_tensor_like<__nv_bfloat16>(rAccOut);
+    auto rAccOut_fp32x2 = recast<float2>(rAccOut);
+    auto rAccOut_bf162 = recast<__nv_bfloat162>(rAccOut_bf16);
+    #pragma unroll
+    for(int i=0;i<size(rAccOut_bf162);i++)
+    {
+        rAccOut_bf162(i) = __float22bfloat162_rn(rAccOut_fp32x2(i));
+    }
+
+    auto sO = make_tensor(sQ.data(), SmemLayoutO{});
+    auto smem_tiled_copy_O = make_tiled_copy_C(SmemCopyAtomO{}, tiled_mma);
+    auto smem_thr_copy_O = smem_tiled_copy_O.get_thread_slice(tidx);
+    auto taccOrO = smem_thr_copy_O.partition_S(rAccOut_bf16);
+    auto taccOsO = smem_thr_copy_O.partition_D(sO);
+    cute::copy(smem_tiled_copy_O, taccOrO, taccOsO);
+    
+    auto gO = local_tile(O, 
+                         make_tile(Int<kBlockM>{}, Int<HeadDim>{}),
+                         make_coord(m_block, _));
+    GmemTiledCopyO gmem_tiled_copy_O;
+    auto gmem_thr_copy_O = gmem_tiled_copy_O.get_thread_slice(tidx);
+    auto tOsO = gmem_thr_copy_O.partition_S(sO);
+    auto tOgO = gmem_thr_copy_O.partition_D(gO(_, _, 0));
+    
+    __syncthreads();
+    cute::copy(gmem_tiled_copy_O, tOsO, tOgO);
 }
 
 // A*B=C
