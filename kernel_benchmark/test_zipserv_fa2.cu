@@ -1,8 +1,19 @@
 #include <cuda_runtime.h>
 #include <cstdio>
+#include <cstdlib>
 #include "zipserv_fa2.cuh"
 #include "L_API.cuh"
 #include "utils.h"
+
+#define CUDA_CHECK(call)                                                        \
+    do {                                                                        \
+        cudaError_t _err = (call);                                              \
+        if (_err != cudaSuccess) {                                              \
+            fprintf(stderr, "CUDA error at %s:%d: %s (%d)\n",                \
+                    __FILE__, __LINE__, cudaGetErrorString(_err), (int)_err);  \
+            std::exit(EXIT_FAILURE);                                             \
+        }                                                                       \
+    } while (0)
 
 // int test_empty_kernel() {
 //     // 假设每个参数都用最小合法值
@@ -618,6 +629,8 @@ int main()
         64,
         64*64,
         0.125f);
+    CUDA_CHECK(cudaGetLastError());
+    CUDA_CHECK(cudaDeviceSynchronize());
     // compute_atten_zipserv<<<gridDim, blockDim, shared_mem_size>>>(
     //                         Wq_M_GLOBAL, Wk_M_GLOBAL, Wq_M_GLOBAL,
     //                         Wq_M_GLOBAL, Wq_M_GLOBAL,
@@ -650,7 +663,7 @@ int main()
     //                         Wk_M_GLOBAL,
     //                         X_N_GLOBAL,
     //                         Wk_N_GLOBAL);
-    cudaMemcpy(O_host, O_device, sizeof(__nv_bfloat16) * 64 * 64, cudaMemcpyDeviceToHost); 
+    CUDA_CHECK(cudaMemcpy(O_host, O_device, sizeof(__nv_bfloat16) * 64 * 64, cudaMemcpyDeviceToHost)); 
     print_bf16_matrix("Output O", O_host, Wq_M_GLOBAL, X_N_GLOBAL);
 
     return 0;
