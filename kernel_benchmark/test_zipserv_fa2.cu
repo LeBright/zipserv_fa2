@@ -65,16 +65,44 @@ void print_bf16_matrix(const char* name, __nv_bfloat16* matrix, int rows, int co
     }
     printf("\n");
 }
+
+void print_row_activity(const char* name, __nv_bfloat16* matrix, int rows, int cols, int sample_cols = 8) {
+    printf("\n===== %s row activity =====\n", name);
+
+    auto print_row = [&](int row) {
+        int nonzero_count = 0;
+        float row_sum = 0.0f;
+        for (int col = 0; col < cols; ++col) {
+            float value = __bfloat162float(matrix[row * cols + col]);
+            row_sum += value;
+            if (value != 0.0f) {
+                ++nonzero_count;
+            }
+        }
+
+        printf("row %3d: nonzero=%3d/%3d sum=%10.4f samples:", row, nonzero_count, cols, row_sum);
+        for (int col = 0; col < std::min(cols, sample_cols); ++col) {
+            printf(" %8.4f", __bfloat162float(matrix[row * cols + col]));
+        }
+        printf("\n");
+    };
+
+    int probe_rows[] = {0, std::max(0, rows / 2 - 1), std::min(rows - 1, rows / 2), rows - 1};
+    for (int probe_row : probe_rows) {
+        print_row(probe_row);
+    }
+}
+
 int main()
 {
-    int Wq_M_GLOBAL = 128;
-    int Wq_N_GLOBAL = 128;
-    int Wk_M_GLOBAL = 128;
-    int Wk_N_GLOBAL = 128;
-    int Wv_M_GLOBAL = 128;
-    int Wv_N_GLOBAL = 128;
-    int X_M_GLOBAL = 128;
-    int X_N_GLOBAL = 128;
+    int Wq_M_GLOBAL = 64;
+    int Wq_N_GLOBAL = 64;
+    int Wk_M_GLOBAL = 64;
+    int Wk_N_GLOBAL = 64;
+    int Wv_M_GLOBAL = 64;
+    int Wv_N_GLOBAL = 64;
+    int X_M_GLOBAL = 64;
+    int X_N_GLOBAL = 64;
 
     int SPLIT_K = 1;
 
@@ -484,7 +512,8 @@ int main()
     // compare results
     double max_abs_error_Q=ComputeTotalError_BF16(Q_host_cublas, Q_host, Wq_M_GLOBAL, X_N_GLOBAL);
     printf("Q Matrix - Max Absolute Error: %lf\n", max_abs_error_Q);
-
+    print_row_activity("Q zipserv", Q_host, Wq_M_GLOBAL, X_N_GLOBAL);
+    print_row_activity("Q cublas", Q_host_cublas, Wq_M_GLOBAL, X_N_GLOBAL);
     // K=Wk*X
     // cpu
     for(int i=0; i<Wk_M_GLOBAL;i++)
@@ -549,6 +578,8 @@ int main()
     // compare results
     double max_abs_error_K=ComputeTotalError_BF16(K_host_cublas, K_host, Wk_M_GLOBAL, X_N_GLOBAL);
     printf("K Matrix - Max Absolute Error: %lf\n", max_abs_error_K);
+    print_row_activity("K zipserv", K_host, Wk_M_GLOBAL, X_N_GLOBAL);
+    print_row_activity("K cublas", K_host_cublas, Wk_M_GLOBAL, X_N_GLOBAL);
 
     // V=Wv*X
     // cpu
@@ -614,8 +645,10 @@ int main()
     // compare results
     double max_abs_error_V=ComputeTotalError_BF16(V_host_cublas, V_host, Wv_M_GLOBAL, X_N_GLOBAL);
     printf("V Matrix - Max Absolute Error: %lf\n", max_abs_error_V);
+    print_row_activity("V zipserv", V_host, Wv_M_GLOBAL, X_N_GLOBAL);
+    print_row_activity("V cublas", V_host_cublas, Wv_M_GLOBAL, X_N_GLOBAL);
 
-    dim3 gridDim(Wq_M_GLOBAL/kBlockM, 1, X_N_GLOBAL/HeadDim);
+    dim3 gridDim(Wq_M_GLOBAL/kBlockM, X_N_GLOBAL/HeadDim, 1);
     dim3 blockDim(32*4,1,1);
     int shared_mem_size = (kBlockM * HeadDim * sizeof(__nv_bfloat16)) * 5; 
     compute_attn_v2<<<gridDim, blockDim, shared_mem_size>>>(
@@ -651,6 +684,7 @@ int main()
     CUDA_CHECK(cudaGetLastError());
     CUDA_CHECK(cudaDeviceSynchronize());
     CUDA_CHECK(cudaMemcpy(O_host, O_device, sizeof(__nv_bfloat16) * X_N_GLOBAL * Wq_M_GLOBAL, cudaMemcpyDeviceToHost)); 
+    print_row_activity("O", O_host, Wq_M_GLOBAL, X_N_GLOBAL);
     print_bf16_matrix("Output O", O_host, Wq_M_GLOBAL, X_N_GLOBAL);
 
     return 0;
