@@ -67,14 +67,14 @@ void print_bf16_matrix(const char* name, __nv_bfloat16* matrix, int rows, int co
 }
 int main()
 {
-    int Wq_M_GLOBAL = 64;
-    int Wq_N_GLOBAL = 64;
-    int Wk_M_GLOBAL = 64;
-    int Wk_N_GLOBAL = 64;
-    int Wv_M_GLOBAL = 64;
-    int Wv_N_GLOBAL = 64;
-    int X_M_GLOBAL = 64;
-    int X_N_GLOBAL = 64;
+    int Wq_M_GLOBAL = 128;
+    int Wq_N_GLOBAL = 128;
+    int Wk_M_GLOBAL = 128;
+    int Wk_N_GLOBAL = 128;
+    int Wv_M_GLOBAL = 128;
+    int Wv_N_GLOBAL = 128;
+    int X_M_GLOBAL = 128;
+    int X_N_GLOBAL = 128;
 
     int SPLIT_K = 1;
 
@@ -620,14 +620,14 @@ int main()
     int shared_mem_size = (kBlockM * HeadDim * sizeof(__nv_bfloat16)) * 5; 
     compute_attn_v2<<<gridDim, blockDim, shared_mem_size>>>(
         O_device, 
-        Q_device_cublas, 
-        K_device_cublas,
-        V_device_cublas,
-        64,
-        64,
-        64,
-        64,
-        64*64,
+        Q_device, 
+        K_device,
+        V_device,
+        Wq_M_GLOBAL,
+        Wk_M_GLOBAL,
+        Wv_M_GLOBAL,
+        Wq_M_GLOBAL,
+        HeadDim,
         0.125f);
 // compute_attn_v2_zipserv<<<gridDim, blockDim, shared_mem_size>>>(O_device, 
 //                                                                 K_device_cublas, V_device_cublas, 
@@ -650,39 +650,7 @@ int main()
 //                                                                 X_device);
     CUDA_CHECK(cudaGetLastError());
     CUDA_CHECK(cudaDeviceSynchronize());
-    // compute_atten_zipserv<<<gridDim, blockDim, shared_mem_size>>>(
-    //                         Wq_M_GLOBAL, Wk_M_GLOBAL, Wq_M_GLOBAL,
-    //                         Wq_M_GLOBAL, Wq_M_GLOBAL,
-    //                         nullptr, nullptr, V_device, O_device,
-    //                         0, 0.125f,
-    //                         X_device,
-    //                         Wq_sign_mantissa_gpu,
-    //                         Wq_compressed_full_gpu,
-    //                         Wq_bitmap1_gpu,
-    //                         Wq_bitmap2_gpu,
-    //                         Wq_bitmap3_gpu,
-    //                         Wq_TileOffsets_median_gpu,
-    //                         Wq_TileOffsets_global_gpu,
-    //                         Wq_max_high_freq_count,
-    //                         Wq_max_full_count,
-    //                         Wq_start_exp,
-    //                         Wq_M_GLOBAL,
-    //                         X_N_GLOBAL,
-    //                         Wq_N_GLOBAL,
-    //                         Wk_sign_mantissa_gpu,
-    //                         Wk_compressed_full_gpu,
-    //                         Wk_bitmap1_gpu,
-    //                         Wk_bitmap2_gpu,
-    //                         Wk_bitmap3_gpu,
-    //                         Wk_TileOffsets_median_gpu,
-    //                         Wk_TileOffsets_global_gpu,
-    //                         Wk_max_high_freq_count,
-    //                         Wk_max_full_count,
-    //                         Wk_start_exp,
-    //                         Wk_M_GLOBAL,
-    //                         X_N_GLOBAL,
-    //                         Wk_N_GLOBAL);
-    CUDA_CHECK(cudaMemcpy(O_host, O_device, sizeof(__nv_bfloat16) * 64 * 64, cudaMemcpyDeviceToHost)); 
+    CUDA_CHECK(cudaMemcpy(O_host, O_device, sizeof(__nv_bfloat16) * X_N_GLOBAL * Wq_M_GLOBAL, cudaMemcpyDeviceToHost)); 
     print_bf16_matrix("Output O", O_host, Wq_M_GLOBAL, X_N_GLOBAL);
 
     return 0;
