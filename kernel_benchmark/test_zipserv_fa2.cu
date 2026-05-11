@@ -618,17 +618,36 @@ int main()
     dim3 gridDim(Wq_M_GLOBAL/kBlockM, 1, X_N_GLOBAL/HeadDim);
     dim3 blockDim(32*4,1,1);
     int shared_mem_size = (kBlockM * HeadDim * sizeof(__nv_bfloat16)) * 5; 
-    compute_attn_v2<<<gridDim, blockDim, shared_mem_size>>>(
-        O_device, 
-        Q_device_cublas, 
-        K_device_cublas,
-        V_device_cublas,
-        64,
-        64,
-        64,
-        64,
-        64*64,
-        0.125f);
+    // compute_attn_v2<<<gridDim, blockDim, shared_mem_size>>>(
+    //     O_device, 
+    //     Q_device_cublas, 
+    //     K_device_cublas,
+    //     V_device_cublas,
+    //     64,
+    //     64,
+    //     64,
+    //     64,
+    //     64*64,
+    //     0.125f);
+compute_attn_v2_zipserv<<<gridDim, blockDim, shared_mem_size>>>(O_ptr, 
+                                                                K_device_cublas, V_device_cublas, 
+                                                                Wk_N_GLOBAL, Wv_N_GLOBAL,  X_N_GLOBAL,
+                                                                64*64, 
+                                                                0.125f,
+                                                                Wq_sign_mantissa_gpu,
+                                                                Wq_compressed_full_gpu,
+                                                                Wq_bitmap1_gpu,
+                                                                Wq_bitmap2_gpu,
+                                                                Wq_bitmap3_gpu,
+                                                                Wq_TileOffsets_median_gpu,
+                                                                Wq_TileOffsets_global_gpu,
+                                                                Wq_max_high_freq_count,
+                                                                Wq_max_full_count,
+                                                                Wq_start_exp,
+                                                                Wq_M_Global,
+                                                                Wq_N_Global,
+                                                                Wq_K_Global,
+                                                                X_device)
     CUDA_CHECK(cudaGetLastError());
     CUDA_CHECK(cudaDeviceSynchronize());
     // compute_atten_zipserv<<<gridDim, blockDim, shared_mem_size>>>(
