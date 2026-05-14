@@ -643,7 +643,7 @@ int main()
     //     X_N_GLOBAL,
     //     0.125f);
 compute_attn_v2_zipserv<<<gridDim, blockDim, shared_mem_size>>>(O_device, 
-                                                                K_device_cublas, V_device_cublas, 
+                                                                K_device, V_device, 
                                                                 Wk_N_GLOBAL, Wv_N_GLOBAL,  X_N_GLOBAL,
                                                                 X_N_GLOBAL, 
                                                                 0.125f,
@@ -678,7 +678,7 @@ compute_attn_v2_zipserv<<<gridDim, blockDim, shared_mem_size>>>(O_device,
     CUDA_CHECK(cudaDeviceSynchronize());
     CUDA_CHECK(cudaMemcpy(O_host, O_device, sizeof(__nv_bfloat16) * X_N_GLOBAL * Wq_M_GLOBAL, cudaMemcpyDeviceToHost)); 
     // print_row_activity("O", O_host, Wq_M_GLOBAL, X_N_GLOBAL);
-    print_bf16_matrix("Output O", O_host, Wq_M_GLOBAL, X_N_GLOBAL);
+    print_bf16_matrix("Output O", K_host, Wq_M_GLOBAL, X_N_GLOBAL);
 
     return 0;
 }

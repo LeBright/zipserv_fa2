@@ -333,7 +333,8 @@ __device__ void BF16TripleBitmap_MM_Kernel_prepareQKV(
     const int N_Global,
     const int K_Global,
     const int head_id,
-    const int n_block)
+    const int n_block,
+    const int matrixID=0) // Q=0, K=1, V=2
 {
     // Tile_M in zipserv-> HeadDim in fa2
     // Tile_N in zipserv-> kBlockM in fa2
@@ -568,7 +569,7 @@ __device__ void BF16TripleBitmap_MM_Kernel_prepareQKV(
         }
     }
 
-    StoreToSharedMemoryFromRegisterBitmapV3_Swizzle(smem_C, c);
+    StoreToSharedMemoryFromRegisterBitmapV3_Swizzle(smem_C, c, matrixID);
 
     __syncthreads();
 }
@@ -687,7 +688,7 @@ __global__ void compute_attn_v2_zipserv(
                                           X,
                                           Q_M_Global, Q_N_Global, Q_K_Global,
                                           base_id,
-                                          m_block);
+                                          m_block, 0);
     cp_async_fence();
     cp_async_wait<0>();
     __syncthreads();
@@ -710,6 +711,8 @@ __global__ void compute_attn_v2_zipserv(
 
     // copy KV
     constexpr bool kDebugPrintKCompare = true;
+    constexpr int kDebugPrintRows = 4;
+    constexpr int kDebugPrintCols = 8;
     if constexpr (kDebugPrintKCompare) {
         if (m_block == 0 && base_id == 0) {
             // Baseline: direct load K tile 0 from global memory.
@@ -722,11 +725,15 @@ __global__ void compute_attn_v2_zipserv(
             cp_async_wait<0>();
             __syncthreads();
             if (tidx == 0) {
-                printf("[DBG][K-direct][blk=0] ");
-                for (int i = 0; i < 8; ++i) {
-                    printf("%.4f ", __bfloat162float(sK(i)));
+                printf("[DBG][K-direct][blk=0]\n");
+                for (int r = 0; r < kDebugPrintRows; ++r) {
+                    printf("  row%d: ", r);
+                    for (int c = 0; c < kDebugPrintCols; ++c) {
+                        int idx = r * kDebugPrintCols + c;
+                        printf("%.4f ", __bfloat162float(sK(idx)));
+                    }
+                    printf("\n");
                 }
-                printf("\n");
             }
         }
     }
@@ -738,16 +745,20 @@ __global__ void compute_attn_v2_zipserv(
                                           X,
                                           K_M_Global, K_N_Global, K_K_Global,
                                           base_id,
-                                          0);
+                                          0, 1);
     if constexpr (kDebugPrintKCompare) {
         if (m_block == 0 && base_id == 0) {
             __syncthreads();
             if (tidx == 0) {
-                printf("[DBG][K-prepare][blk=0] ");
-                for (int i = 0; i < 8; ++i) {
-                    printf("%.4f ", __bfloat162float(sK(i)));
+                printf("[DBG][K-prepare][blk=0]\n");
+                for (int r = 0; r < kDebugPrintRows; ++r) {
+                    printf("  row%d: ", r);
+                    for (int c = 0; c < kDebugPrintCols; ++c) {
+                        int idx = r * kDebugPrintCols + c;
+                        printf("%.4f ", __bfloat162float(sK(idx)));
+                    }
+                    printf("\n");
                 }
-                printf("\n");
             }
         }
     }
@@ -866,11 +877,15 @@ __global__ void compute_attn_v2_zipserv(
                     cp_async_wait<0>();
                     __syncthreads();
                     if (tidx == 0) {
-                        printf("[DBG][K-direct][blk=%d] ", n_block + 1);
-                        for (int i = 0; i < 8; ++i) {
-                            printf("%.4f ", __bfloat162float(sK(i)));
+                        printf("[DBG][K-direct][blk=%d]\n", n_block + 1);
+                        for (int r = 0; r < kDebugPrintRows; ++r) {
+                            printf("  row%d: ", r);
+                            for (int c = 0; c < kDebugPrintCols; ++c) {
+                                int idx = r * kDebugPrintCols + c;
+                                printf("%.4f ", __bfloat162float(sK(idx)));
+                            }
+                            printf("\n");
                         }
-                        printf("\n");
                     }
                 }
             }
@@ -882,16 +897,20 @@ __global__ void compute_attn_v2_zipserv(
                                                 X,
                                                 K_M_Global, K_N_Global, K_K_Global,
                                                 base_id,
-                                                n_block+1);
+                                                n_block+1, 1);
             if constexpr (kDebugPrintKCompare) {
                 if (m_block == 0 && base_id == 0 && n_block < 2) {
                     __syncthreads();
                     if (tidx == 0) {
-                        printf("[DBG][K-prepare][blk=%d] ", n_block + 1);
-                        for (int i = 0; i < 8; ++i) {
-                            printf("%.4f ", __bfloat162float(sK(i)));
+                        printf("[DBG][K-prepare][blk=%d]\n", n_block + 1);
+                        for (int r = 0; r < kDebugPrintRows; ++r) {
+                            printf("  row%d: ", r);
+                            for (int c = 0; c < kDebugPrintCols; ++c) {
+                                int idx = r * kDebugPrintCols + c;
+                                printf("%.4f ", __bfloat162float(sK(idx)));
+                            }
+                            printf("\n");
                         }
-                        printf("\n");
                     }
                 }
             }
