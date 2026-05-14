@@ -95,14 +95,14 @@ void print_row_activity(const char* name, __nv_bfloat16* matrix, int rows, int c
 
 int main()
 {
-    int Wq_M_GLOBAL = 64;
-    int Wq_N_GLOBAL = 64;
-    int Wk_M_GLOBAL = 64;
-    int Wk_N_GLOBAL = 64;
-    int Wv_M_GLOBAL = 64;
-    int Wv_N_GLOBAL = 64;
-    int X_M_GLOBAL = 64;
-    int X_N_GLOBAL = 64;
+    int Wq_M_GLOBAL = 128;
+    int Wq_N_GLOBAL = 128;
+    int Wk_M_GLOBAL = 128;
+    int Wk_N_GLOBAL = 128;
+    int Wv_M_GLOBAL = 128;
+    int Wv_N_GLOBAL = 128;
+    int X_M_GLOBAL = 128;
+    int X_N_GLOBAL = 128;
 
     int SPLIT_K = 1;
 
@@ -660,12 +660,12 @@ int main()
         Wk_M_GLOBAL,
         Wv_M_GLOBAL,
         Wq_M_GLOBAL,
-        HeadDim,
+        X_N_GLOBAL,
         0.125f);
 // compute_attn_v2_zipserv<<<gridDim, blockDim, shared_mem_size>>>(O_device, 
 //                                                                 K_device_cublas, V_device_cublas, 
 //                                                                 Wk_N_GLOBAL, Wv_N_GLOBAL,  X_N_GLOBAL,
-//                                                                 64*64, 
+//                                                                 X_N_GLOBAL, 
 //                                                                 0.125f,
 //                                                                 Wq_sign_mantissa_gpu,
 //                                                                 Wq_compressed_full_gpu,

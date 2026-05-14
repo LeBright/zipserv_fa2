@@ -483,32 +483,34 @@
 __global__ void compute_attn_v2(void* O_ptr, 
                                 const void* Q_ptr, const void* K_ptr, const void* V_ptr, 
                                 int q_len, int k_len, int v_len,  int o_len,
-                                int head_stride, 
+                                int row_stride, 
                                 float sm_scale)
 {
     const int m_block = blockIdx.x; // one block process Q_len/kBlockM (AKA N/Br in fa2 paper ) m_blocks 
     const int base_id = blockIdx.y; // it tells us the block process which head(base_id%headnum) of which batch(base_id/headnum) 
-    const int tidx = threadIdx.x;    
+    const int tidx = threadIdx.x;  
+    
+    if(m_block * kBlockM >= q_len) return; // if the block start processing token id exceed actual q_len, return directly
 
     extern __shared__ __nv_bfloat16 smem[];
     auto Q_smem_ptr = smem;
     auto K_smem_ptr = Q_smem_ptr + cosize(SmemLayoutQ{});
     auto V_smem_ptr = K_smem_ptr + cosize(SmemLayoutK{});
 
-    auto base_offset = base_id * head_stride;
+    auto base_offset = base_id * HeadDim;
 
     auto Q = make_tensor(make_gmem_ptr<__nv_bfloat16>((__nv_bfloat16*)(Q_ptr) + base_offset),
                          make_shape(q_len,Int<HeadDim>{}),
-                         make_stride(Int<HeadDim>{}, _1{}));
+                         make_stride(row_stride, _1{}));
     auto K = make_tensor(make_gmem_ptr<__nv_bfloat16>((__nv_bfloat16*)(K_ptr) + base_offset),
                         make_shape(k_len,Int<HeadDim>{}),
-                        make_stride(Int<HeadDim>{}, _1{}));
+                        make_stride(row_stride, _1{}));
     auto V = make_tensor(make_gmem_ptr<__nv_bfloat16>((__nv_bfloat16*)(V_ptr) + base_offset),
                         make_shape(v_len,Int<HeadDim>{}),
-                        make_stride(Int<HeadDim>{}, _1{}));
+                        make_stride(row_stride, _1{}));
     auto O = make_tensor(make_gmem_ptr<__nv_bfloat16>((__nv_bfloat16*)(O_ptr) + base_offset),
                         make_shape(o_len,Int<HeadDim>{}),
-                        make_stride(Int<HeadDim>{}, _1{}));
+                        make_stride(row_stride, _1{}));
 
     // global memory
     auto gQ = local_tile(Q, make_tile(Int<kBlockM>{}, Int<HeadDim>{}),
@@ -1053,7 +1055,7 @@ __global__ void compute_attn_v2_zipserv(
                                 void* O_ptr, 
                                 const void* K_ptr, const void* V_ptr, 
                                 int k_len, int v_len,  int o_len,
-                                int head_stride, 
+                                int row_stride, 
                                 float sm_scale,
                                 const uint8_t* Q_SignMantissa,
                                 const __nv_bfloat16* Q_CompressedFull,
@@ -1074,22 +1076,24 @@ __global__ void compute_attn_v2_zipserv(
     const int base_id = blockIdx.y; // it tells us the block process which head(base_id%headnum) of which batch(base_id/headnum) 
     const int tidx = threadIdx.x;    
 
+    if (m_block * kBlockM >= o_len) return;
+
     extern __shared__ __nv_bfloat16 smem[];
     auto Q_smem_ptr = smem;
     auto K_smem_ptr = Q_smem_ptr + cosize(SmemLayoutQ{});
     auto V_smem_ptr = K_smem_ptr + cosize(SmemLayoutK{});
 
-    auto base_offset = base_id * head_stride;
+    auto base_offset = base_id * HeadDim;
 
     auto K = make_tensor(make_gmem_ptr<__nv_bfloat16>((__nv_bfloat16*)(K_ptr) + base_offset),
                         make_shape(k_len,Int<HeadDim>{}),
-                        make_stride(Int<HeadDim>{}, _1{}));
+                        make_stride(row_stride, _1{}));
     auto V = make_tensor(make_gmem_ptr<__nv_bfloat16>((__nv_bfloat16*)(V_ptr) + base_offset),
                         make_shape(v_len,Int<HeadDim>{}),
-                        make_stride(Int<HeadDim>{}, _1{}));
+                        make_stride(row_stride, _1{}));
     auto O = make_tensor(make_gmem_ptr<__nv_bfloat16>((__nv_bfloat16*)(O_ptr) + base_offset),
                         make_shape(o_len,Int<HeadDim>{}),
-                        make_stride(Int<HeadDim>{}, _1{}));
+                        make_stride(row_stride, _1{}));
 
     // global memory
     auto gK = local_tile(K,
