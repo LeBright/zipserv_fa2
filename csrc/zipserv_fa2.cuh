@@ -316,7 +316,7 @@ __global__ void compute_attn_v2(void* O_ptr,
 
 // A*B=C
 // B in global, transposed
-__device__ void BF16TripleBitmap_MM_Kernel_prapareQKV(
+__device__ void BF16TripleBitmap_MM_Kernel_prepareQKV(
     __nv_bfloat16* smem_C,
     const uint8_t* SignMantissa,
     const __nv_bfloat16* CompressedFull,
@@ -593,6 +593,19 @@ __global__ void compute_attn_v2_zipserv(
                                 const int Q_M_Global,
                                 const int Q_N_Global,
                                 const int Q_K_Global,
+                                const uint8_t* K_SignMantissa,
+                                const __nv_bfloat16* K_CompressedFull,
+                                const uint64_t* K_Bitmap1,
+                                const uint64_t* K_Bitmap2,
+                                const uint64_t* K_Bitmap3,
+                                const int* K_TileOffsets_Median,
+                                const int* K_TileOffsets_Global,
+                                const int K_max_high_freq_count,
+                                const int K_max_full_count,
+                                const uint8_t K_start_exp,
+                                const int K_M_Global,
+                                const int K_N_Global,
+                                const int K_K_Global,
                                 const __nv_bfloat16* X)
 {
     const int m_block = blockIdx.x; // one block process Q_len/kBlockM (AKA N/Br in fa2 paper ) m_blocks 
@@ -608,9 +621,9 @@ __global__ void compute_attn_v2_zipserv(
 
     auto base_offset = base_id * HeadDim;
 
-    auto K = make_tensor(make_gmem_ptr<__nv_bfloat16>((__nv_bfloat16*)(K_ptr) + base_offset),
-                        make_shape(k_len,Int<HeadDim>{}),
-                        make_stride(row_stride, _1{}));
+    // auto K = make_tensor(make_gmem_ptr<__nv_bfloat16>((__nv_bfloat16*)(K_ptr) + base_offset),
+    //                     make_shape(k_len,Int<HeadDim>{}),
+    //                     make_stride(row_stride, _1{}));
     auto V = make_tensor(make_gmem_ptr<__nv_bfloat16>((__nv_bfloat16*)(V_ptr) + base_offset),
                         make_shape(v_len,Int<HeadDim>{}),
                         make_stride(row_stride, _1{}));
@@ -619,9 +632,9 @@ __global__ void compute_attn_v2_zipserv(
                         make_stride(row_stride, _1{}));
 
     // global memory
-    auto gK = local_tile(K,
-                         make_tile(Int<kBlockN>{}, Int<HeadDim>{}),
-                         make_coord(0, _));
+    // auto gK = local_tile(K,
+    //                      make_tile(Int<kBlockN>{}, Int<HeadDim>{}),
+    //                      make_coord(0, _));
     auto gV = local_tile(V,
                          make_tile(Int<kBlockN>{}, Int<HeadDim>{}),
                          make_coord(0, _));
@@ -637,7 +650,7 @@ __global__ void compute_attn_v2_zipserv(
     GmemTiledCopyQKV gmem_tiled_copy_QKV;
     auto gmem_thr_copy_QKV = gmem_tiled_copy_QKV.get_thread_slice(tidx);
     auto tQsQ = gmem_thr_copy_QKV.partition_D(sQ);
-    auto tKgK = gmem_thr_copy_QKV.partition_S(gK(_, _, 0));
+    // auto tKgK = gmem_thr_copy_QKV.partition_S(gK(_, _, 0));
     auto tKsK = gmem_thr_copy_QKV.partition_D(sK);
     auto tVgV = gmem_thr_copy_QKV.partition_S(gV(_, _, 0));
     auto tVsV = gmem_thr_copy_QKV.partition_D(sV);
@@ -667,16 +680,14 @@ __global__ void compute_attn_v2_zipserv(
     
     // copy Q
     // cute::copy(gmem_tiled_copy_QKV, tQgQ, tQsQ);
-    BF16TripleBitmap_MM_Kernel_prapareQKV(
-        smem, 
-        Q_SignMantissa, Q_CompressedFull, Q_Bitmap1, Q_Bitmap2, Q_Bitmap3, 
-        Q_TileOffsets_Median, Q_TileOffsets_Global, Q_max_high_freq_count, Q_max_full_count, 
-        Q_start_exp,
-        X,
-        Q_M_Global, Q_N_Global, Q_K_Global,
-        base_id,
-        m_block
-    );
+    BF16TripleBitmap_MM_Kernel_prepareQKV(Q_smem_ptr, 
+                                          Q_SignMantissa, Q_CompressedFull, Q_Bitmap1, Q_Bitmap2, Q_Bitmap3, 
+                                          Q_TileOffsets_Median, Q_TileOffsets_Global, Q_max_high_freq_count, Q_max_full_count, 
+                                          Q_start_exp,
+                                          X,
+                                          Q_M_Global, Q_N_Global, Q_K_Global,
+                                          base_id,
+                                          m_block);
     cp_async_fence();
     cp_async_wait<0>();
     __syncthreads();
@@ -698,7 +709,15 @@ __global__ void compute_attn_v2_zipserv(
     }
 
     // copy KV
-    cute::copy(gmem_tiled_copy_QKV, tKgK, tKsK);
+    // cute::copy(gmem_tiled_copy_QKV, tKgK, tKsK);
+    BF16TripleBitmap_MM_Kernel_prepareQKV(K_smem_ptr, 
+                                          K_SignMantissa, K_CompressedFull, K_Bitmap1, K_Bitmap2, K_Bitmap3, 
+                                          K_TileOffsets_Median, K_TileOffsets_Global, K_max_high_freq_count, K_max_full_count, 
+                                          K_start_exp,
+                                          X,
+                                          K_M_Global, K_N_Global, K_K_Global,
+                                          base_id,
+                                          0);
     cp_async_fence();
     cute::copy(gmem_tiled_copy_QKV, tVgV, tVsV);
     cp_async_fence();   
@@ -802,11 +821,19 @@ __global__ void compute_attn_v2_zipserv(
 
         if(n_block<n_block_max-1)
         {
-            gK = local_tile(K, 
-                            make_tile(Int<kBlockN>{}, Int<HeadDim>{}),
-                            make_coord(n_block+1, _));
-            tKgK = gmem_thr_copy_QKV.partition_S(gK(_, _, 0));
-            cute::copy(gmem_tiled_copy_QKV, tKgK, tKsK);
+            // gK = local_tile(K, 
+            //                 make_tile(Int<kBlockN>{}, Int<HeadDim>{}),
+            //                 make_coord(n_block+1, _));
+            // tKgK = gmem_thr_copy_QKV.partition_S(gK(_, _, 0));
+            // cute::copy(gmem_tiled_copy_QKV, tKgK, tKsK);
+            BF16TripleBitmap_MM_Kernel_prepareQKV(K_smem_ptr, 
+                                                K_SignMantissa, K_CompressedFull, K_Bitmap1, K_Bitmap2, K_Bitmap3, 
+                                                K_TileOffsets_Median, K_TileOffsets_Global, K_max_high_freq_count, K_max_full_count, 
+                                                K_start_exp,
+                                                X,
+                                                K_M_Global, K_N_Global, K_K_Global,
+                                                base_id,
+                                                n_block+1);
         }
         cp_async_fence();
 
