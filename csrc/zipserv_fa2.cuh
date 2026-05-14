@@ -621,9 +621,9 @@ __global__ void compute_attn_v2_zipserv(
 
     auto base_offset = base_id * HeadDim;
 
-    // auto K = make_tensor(make_gmem_ptr<__nv_bfloat16>((__nv_bfloat16*)(K_ptr) + base_offset),
-    //                     make_shape(k_len,Int<HeadDim>{}),
-    //                     make_stride(row_stride, _1{}));
+    auto K = make_tensor(make_gmem_ptr<__nv_bfloat16>((__nv_bfloat16*)(K_ptr) + base_offset),
+                        make_shape(k_len,Int<HeadDim>{}),
+                        make_stride(row_stride, _1{}));
     auto V = make_tensor(make_gmem_ptr<__nv_bfloat16>((__nv_bfloat16*)(V_ptr) + base_offset),
                         make_shape(v_len,Int<HeadDim>{}),
                         make_stride(row_stride, _1{}));
@@ -632,9 +632,9 @@ __global__ void compute_attn_v2_zipserv(
                         make_stride(row_stride, _1{}));
 
     // global memory
-    // auto gK = local_tile(K,
-    //                      make_tile(Int<kBlockN>{}, Int<HeadDim>{}),
-    //                      make_coord(0, _));
+    auto gK = local_tile(K,
+                         make_tile(Int<kBlockN>{}, Int<HeadDim>{}),
+                         make_coord(0, _));
     auto gV = local_tile(V,
                          make_tile(Int<kBlockN>{}, Int<HeadDim>{}),
                          make_coord(0, _));
@@ -650,7 +650,7 @@ __global__ void compute_attn_v2_zipserv(
     GmemTiledCopyQKV gmem_tiled_copy_QKV;
     auto gmem_thr_copy_QKV = gmem_tiled_copy_QKV.get_thread_slice(tidx);
     auto tQsQ = gmem_thr_copy_QKV.partition_D(sQ);
-    // auto tKgK = gmem_thr_copy_QKV.partition_S(gK(_, _, 0));
+    auto tKgK = gmem_thr_copy_QKV.partition_S(gK(_, _, 0));
     auto tKsK = gmem_thr_copy_QKV.partition_D(sK);
     auto tVgV = gmem_thr_copy_QKV.partition_S(gV(_, _, 0));
     auto tVsV = gmem_thr_copy_QKV.partition_D(sV);
@@ -709,7 +709,28 @@ __global__ void compute_attn_v2_zipserv(
     }
 
     // copy KV
-    // cute::copy(gmem_tiled_copy_QKV, tKgK, tKsK);
+    constexpr bool kDebugPrintKCompare = true;
+    if constexpr (kDebugPrintKCompare) {
+        if (m_block == 0 && base_id == 0) {
+            // Baseline: direct load K tile 0 from global memory.
+            gK = local_tile(K,
+                            make_tile(Int<kBlockN>{}, Int<HeadDim>{}),
+                            make_coord(0, _));
+            tKgK = gmem_thr_copy_QKV.partition_S(gK(_, _, 0));
+            cute::copy(gmem_tiled_copy_QKV, tKgK, tKsK);
+            cp_async_fence();
+            cp_async_wait<0>();
+            __syncthreads();
+            if (tidx == 0) {
+                printf("[DBG][K-direct][blk=0] ");
+                for (int i = 0; i < 8; ++i) {
+                    printf("%.4f ", __bfloat162float(sK(i)));
+                }
+                printf("\n");
+            }
+        }
+    }
+
     BF16TripleBitmap_MM_Kernel_prepareQKV(K_smem_ptr, 
                                           K_SignMantissa, K_CompressedFull, K_Bitmap1, K_Bitmap2, K_Bitmap3, 
                                           K_TileOffsets_Median, K_TileOffsets_Global, K_max_high_freq_count, K_max_full_count, 
@@ -718,6 +739,18 @@ __global__ void compute_attn_v2_zipserv(
                                           K_M_Global, K_N_Global, K_K_Global,
                                           base_id,
                                           0);
+    if constexpr (kDebugPrintKCompare) {
+        if (m_block == 0 && base_id == 0) {
+            __syncthreads();
+            if (tidx == 0) {
+                printf("[DBG][K-prepare][blk=0] ");
+                for (int i = 0; i < 8; ++i) {
+                    printf("%.4f ", __bfloat162float(sK(i)));
+                }
+                printf("\n");
+            }
+        }
+    }
     cp_async_fence();
     cute::copy(gmem_tiled_copy_QKV, tVgV, tVsV);
     cp_async_fence();   
@@ -821,11 +854,27 @@ __global__ void compute_attn_v2_zipserv(
 
         if(n_block<n_block_max-1)
         {
-            // gK = local_tile(K, 
-            //                 make_tile(Int<kBlockN>{}, Int<HeadDim>{}),
-            //                 make_coord(n_block+1, _));
-            // tKgK = gmem_thr_copy_QKV.partition_S(gK(_, _, 0));
-            // cute::copy(gmem_tiled_copy_QKV, tKgK, tKsK);
+            if constexpr (kDebugPrintKCompare) {
+                if (m_block == 0 && base_id == 0 && n_block < 2) {
+                    // Baseline: direct load next K tile from global memory.
+                    gK = local_tile(K,
+                                    make_tile(Int<kBlockN>{}, Int<HeadDim>{}),
+                                    make_coord(n_block + 1, _));
+                    tKgK = gmem_thr_copy_QKV.partition_S(gK(_, _, 0));
+                    cute::copy(gmem_tiled_copy_QKV, tKgK, tKsK);
+                    cp_async_fence();
+                    cp_async_wait<0>();
+                    __syncthreads();
+                    if (tidx == 0) {
+                        printf("[DBG][K-direct][blk=%d] ", n_block + 1);
+                        for (int i = 0; i < 8; ++i) {
+                            printf("%.4f ", __bfloat162float(sK(i)));
+                        }
+                        printf("\n");
+                    }
+                }
+            }
+
             BF16TripleBitmap_MM_Kernel_prepareQKV(K_smem_ptr, 
                                                 K_SignMantissa, K_CompressedFull, K_Bitmap1, K_Bitmap2, K_Bitmap3, 
                                                 K_TileOffsets_Median, K_TileOffsets_Global, K_max_high_freq_count, K_max_full_count, 
@@ -834,6 +883,18 @@ __global__ void compute_attn_v2_zipserv(
                                                 K_M_Global, K_N_Global, K_K_Global,
                                                 base_id,
                                                 n_block+1);
+            if constexpr (kDebugPrintKCompare) {
+                if (m_block == 0 && base_id == 0 && n_block < 2) {
+                    __syncthreads();
+                    if (tidx == 0) {
+                        printf("[DBG][K-prepare][blk=%d] ", n_block + 1);
+                        for (int i = 0; i < 8; ++i) {
+                            printf("%.4f ", __bfloat162float(sK(i)));
+                        }
+                        printf("\n");
+                    }
+                }
+            }
         }
         cp_async_fence();
 
