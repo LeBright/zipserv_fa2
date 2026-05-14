@@ -15,26 +15,6 @@
         }                                                                       \
     } while (0)
 
-// int test_empty_kernel() {
-//     // 假设每个参数都用最小合法值
-//     int seqlen_q = 1, seqlen_kv = 1, seqlen_o = 1, actual_seqlen_q = 1, actual_seqlen_kv = 1;
-//     __nv_bfloat16 *Q = nullptr, *K = nullptr, *V = nullptr, *O = nullptr;
-//     float softmax_scale_log2 = 1.0f, scale_softmax = 1.0f;
-
-//     // 你可以根据 kernel 内部需求分配 device memory
-//     // cudaMalloc(&Q, ...); cudaMalloc(&K, ...); cudaMalloc(&V, ...); cudaMalloc(&O, ...);
-
-//     compute_attn<<<1, 32, 48*1024>>>(
-//         seqlen_q, seqlen_kv, seqlen_o, actual_seqlen_q, actual_seqlen_kv,
-//         Q, K, V, O, softmax_scale_log2, scale_softmax
-//     );
-
-//     cudaDeviceSynchronize();
-
-//     printf("kernel launch done\\n");
-//     // cudaFree(Q); cudaFree(K); cudaFree(V); cudaFree(O);
-//     return 0;
-// }
 
 
 void print_bf16_matrix(const char* name, __nv_bfloat16* matrix, int rows, int cols, int max_rows = 128, int max_cols = 32) {
@@ -512,8 +492,8 @@ int main()
     // compare results
     double max_abs_error_Q=ComputeTotalError_BF16(Q_host_cublas, Q_host, Wq_M_GLOBAL, X_N_GLOBAL);
     printf("Q Matrix - Max Absolute Error: %lf\n", max_abs_error_Q);
-    print_row_activity("Q zipserv", Q_host, Wq_M_GLOBAL, X_N_GLOBAL);
-    print_row_activity("Q cublas", Q_host_cublas, Wq_M_GLOBAL, X_N_GLOBAL);
+    // print_row_activity("Q zipserv", Q_host, Wq_M_GLOBAL, X_N_GLOBAL);
+    // print_row_activity("Q cublas", Q_host_cublas, Wq_M_GLOBAL, X_N_GLOBAL);
     // K=Wk*X
     // cpu
     for(int i=0; i<Wk_M_GLOBAL;i++)
@@ -578,8 +558,8 @@ int main()
     // compare results
     double max_abs_error_K=ComputeTotalError_BF16(K_host_cublas, K_host, Wk_M_GLOBAL, X_N_GLOBAL);
     printf("K Matrix - Max Absolute Error: %lf\n", max_abs_error_K);
-    print_row_activity("K zipserv", K_host, Wk_M_GLOBAL, X_N_GLOBAL);
-    print_row_activity("K cublas", K_host_cublas, Wk_M_GLOBAL, X_N_GLOBAL);
+    // print_row_activity("K zipserv", K_host, Wk_M_GLOBAL, X_N_GLOBAL);
+    // print_row_activity("K cublas", K_host_cublas, Wk_M_GLOBAL, X_N_GLOBAL);
 
     // V=Wv*X
     // cpu
@@ -645,8 +625,8 @@ int main()
     // compare results
     double max_abs_error_V=ComputeTotalError_BF16(V_host_cublas, V_host, Wv_M_GLOBAL, X_N_GLOBAL);
     printf("V Matrix - Max Absolute Error: %lf\n", max_abs_error_V);
-    print_row_activity("V zipserv", V_host, Wv_M_GLOBAL, X_N_GLOBAL);
-    print_row_activity("V cublas", V_host_cublas, Wv_M_GLOBAL, X_N_GLOBAL);
+    // print_row_activity("V zipserv", V_host, Wv_M_GLOBAL, X_N_GLOBAL);
+    // print_row_activity("V cublas", V_host_cublas, Wv_M_GLOBAL, X_N_GLOBAL);
 
     dim3 gridDim(Wq_M_GLOBAL/kBlockM, X_N_GLOBAL/HeadDim, 1);
     dim3 blockDim(32*4,1,1);
@@ -684,7 +664,7 @@ int main()
     CUDA_CHECK(cudaGetLastError());
     CUDA_CHECK(cudaDeviceSynchronize());
     CUDA_CHECK(cudaMemcpy(O_host, O_device, sizeof(__nv_bfloat16) * X_N_GLOBAL * Wq_M_GLOBAL, cudaMemcpyDeviceToHost)); 
-    print_row_activity("O", O_host, Wq_M_GLOBAL, X_N_GLOBAL);
+    // print_row_activity("O", O_host, Wq_M_GLOBAL, X_N_GLOBAL);
     print_bf16_matrix("Output O", O_host, Wq_M_GLOBAL, X_N_GLOBAL);
 
     return 0;
