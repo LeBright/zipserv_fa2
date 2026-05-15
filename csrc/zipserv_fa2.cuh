@@ -108,7 +108,33 @@ __global__ void compute_attn_v2(void* O_ptr,
     }
 
     // copy KV
-    cute::copy(gmem_tiled_copy_QKV, tKgK, tKsK);
+        constexpr bool kDebugPrintKCompare = true;
+    constexpr int kDebugPrintRows = 4;
+    constexpr int kDebugPrintCols = 16;
+    if constexpr (kDebugPrintKCompare) {
+        if (m_block == 0 && base_id == 0) {
+            // Baseline: direct load K tile 0 from global memory.
+            gK = local_tile(K,
+                            make_tile(Int<kBlockN>{}, Int<HeadDim>{}),
+                            make_coord(0, _));
+            tKgK = gmem_thr_copy_QKV.partition_S(gK(_, _, 0));
+            cute::copy(gmem_tiled_copy_QKV, tKgK, tKsK);
+            cp_async_fence();
+            cp_async_wait<0>();
+            __syncthreads();
+            if (tidx == 0) {
+                printf("[DBG][K-direct][blk=0]\n");
+                for (int r = 0; r < kDebugPrintRows; ++r) {
+                    printf("  row%d: ", r);
+                    for (int c = 0; c < kDebugPrintCols; ++c) {
+                        int idx = r * kDebugPrintCols + c;
+                        printf("%.4f ", __bfloat162float(sK(idx)));
+                    }
+                    printf("\n");
+                }
+            }
+        }
+    }
     cp_async_fence();
     cute::copy(gmem_tiled_copy_QKV, tVgV, tVsV);
     cp_async_fence();   
@@ -712,7 +738,7 @@ __global__ void compute_attn_v2_zipserv(
     // copy KV
     constexpr bool kDebugPrintKCompare = true;
     constexpr int kDebugPrintRows = 4;
-    constexpr int kDebugPrintCols = 8;
+    constexpr int kDebugPrintCols = 16;
     if constexpr (kDebugPrintKCompare) {
         if (m_block == 0 && base_id == 0) {
             // Baseline: direct load K tile 0 from global memory.
