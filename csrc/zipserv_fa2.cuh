@@ -12,7 +12,7 @@ __global__ void compute_attn_v2(void* O_ptr,
     const int m_block = blockIdx.x; // one block process Q_len/kBlockM (AKA N/Br in fa2 paper ) m_blocks 
     const int base_id = blockIdx.y; // it tells us the block process which head(base_id%headnum) of which batch(base_id/headnum) 
     const int tidx = threadIdx.x;  
-    
+    printf("@@@@@@@@@@@@@@@@@@@@@@@@@@@\n");
     if(m_block * kBlockM >= q_len) return; // if the block start processing token id exceed actual q_len, return directly
 
     extern __shared__ __nv_bfloat16 smem[];

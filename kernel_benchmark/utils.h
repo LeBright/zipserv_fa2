@@ -29,7 +29,7 @@
 #include <cuda_bf16.h>
 #include <cuda_runtime.h>
 // Performance Benchmark
-#define WARM_UP_ITERATION 100
+#define WARM_UP_ITERATION 1000
 #define BENCHMARK_ITERATION 2000
 
 
