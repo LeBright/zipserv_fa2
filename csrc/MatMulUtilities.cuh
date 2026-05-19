@@ -460,7 +460,7 @@ void StoreToSharedMemoryFromRegisterBitmapV3_Swizzle(
                 }
                 int row=Warp_i_offset+row_offset;
                 int col=tensor_j_offset+col_offset;
-                sC(row,col)=__float2bfloat16(c[tensorId][reg_id]);
+                sC(col,row)=__float2bfloat16(c[tensorId][reg_id]);
             }
         }
     }

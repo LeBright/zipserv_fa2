@@ -1,6 +1,10 @@
 #include <cuda_runtime.h>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
+#include <cmath>
+#include <vector>
+#include <algorithm>
 #include "zipserv_fa2.cuh"
 #include "L_API.cuh"
 #include "utils.h"
@@ -111,14 +115,14 @@ int main()
     cudaEventCreate(&start);
     cudaEventCreate(&stop);
 
-    int Wq_M_GLOBAL = 64;
-    int Wq_N_GLOBAL = 64;
-    int Wk_M_GLOBAL = 64;
-    int Wk_N_GLOBAL = 64;
-    int Wv_M_GLOBAL = 64;
-    int Wv_N_GLOBAL = 64;
-    int X_M_GLOBAL = 64;
-    int X_N_GLOBAL = 64;
+    int Wq_M_GLOBAL = 512;
+    int Wq_N_GLOBAL = 512;
+    int Wk_M_GLOBAL = 512;
+    int Wk_N_GLOBAL = 512;
+    int Wv_M_GLOBAL = 512;
+    int Wv_N_GLOBAL = 512;
+    int X_M_GLOBAL  = 512;
+    int X_N_GLOBAL  = 512;
 
     int SPLIT_K = 1;
 
@@ -136,6 +140,7 @@ int main()
     __nv_bfloat16* V_host            = NULL;  // row major
     __nv_bfloat16* V_host_cublas     = NULL;  // row major
     __nv_bfloat16* O_host            = NULL;  // row major
+    __nv_bfloat16* O_host_baseline   = NULL;  // row major
 
     // Device memory
     __nv_bfloat16* Wq_device            = NULL;  // row major    
@@ -169,6 +174,7 @@ int main()
     V_host            = (__nv_bfloat16*)malloc(sizeof(__nv_bfloat16) * Wv_M_GLOBAL * X_N_GLOBAL);
     V_host_cublas     = (__nv_bfloat16*)malloc(sizeof(__nv_bfloat16) * Wv_M_GLOBAL * X_N_GLOBAL);
     O_host            = (__nv_bfloat16*)malloc(sizeof(__nv_bfloat16) * Wq_M_GLOBAL * X_N_GLOBAL);
+    O_host_baseline   = (__nv_bfloat16*)malloc(sizeof(__nv_bfloat16) * Wq_M_GLOBAL * X_N_GLOBAL);
 
     Q_host_cpu            = (__nv_bfloat16*)malloc(sizeof(__nv_bfloat16) * Wq_M_GLOBAL * X_N_GLOBAL);
     K_host_cpu            = (__nv_bfloat16*)malloc(sizeof(__nv_bfloat16) * Wk_M_GLOBAL * X_N_GLOBAL);
@@ -665,21 +671,21 @@ int main()
     dim3 gridDim(Wq_M_GLOBAL/kBlockM, X_N_GLOBAL/HeadDim, 1);
     dim3 blockDim(32*4,1,1);
     int shared_mem_size = (kBlockM * HeadDim * sizeof(__nv_bfloat16)) * 5; 
-    // for (int i = 0; i < WARM_UP_ITERATION; i++) 
-    // {
-    //     compute_attn_v2<<<gridDim, blockDim, shared_mem_size>>>(
-    //         O_device, 
-    //         Q_device, 
-    //         K_device,
-    //         V_device,
-    //         Wq_M_GLOBAL,
-    //         Wk_M_GLOBAL,
-    //         Wv_M_GLOBAL,
-    //         Wq_M_GLOBAL,
-    //         X_N_GLOBAL,
-    //         0.125f);
-    // }
-    // flush_l2_cache();
+    for (int i = 0; i < WARM_UP_ITERATION; i++) 
+    {
+        compute_attn_v2<<<gridDim, blockDim, shared_mem_size>>>(
+            O_device, 
+            Q_device, 
+            K_device,
+            V_device,
+            Wq_M_GLOBAL,
+            Wk_M_GLOBAL,
+            Wv_M_GLOBAL,
+            Wq_M_GLOBAL,
+            X_N_GLOBAL,
+            0.125f);
+    }
+    flush_l2_cache();
 
     float total_milliseconds_compute_attn = 0.0f;
     for (int i = 0; i < BENCHMARK_ITERATION; i++) 
@@ -707,102 +713,161 @@ int main()
         cudaEventElapsedTime(&iter_time, start, stop);
         total_milliseconds_compute_attn += iter_time;
     }
-    //
+    
     float milliseconds_compute_attn = total_milliseconds_compute_attn / BENCHMARK_ITERATION;
     printf("Average compute_attn_v2 execution time over %d iterations: %f ms\n", BENCHMARK_ITERATION, milliseconds_compute_attn);
     
     cudaDeviceSynchronize();
+        CUDA_CHECK(cudaMemcpy(O_host, O_device, sizeof(__nv_bfloat16) * X_N_GLOBAL * Wq_M_GLOBAL, cudaMemcpyDeviceToHost)); 
 
-    // for (int i = 0; i < WARM_UP_ITERATION; i++) 
-    // {
-    //     compute_attn_v2_zipserv<<<gridDim, blockDim, shared_mem_size>>>(O_device, 
-    //                                                                     K_device, V_device, 
-    //                                                                     Wk_N_GLOBAL, Wv_N_GLOBAL,  X_N_GLOBAL,
-    //                                                                     X_N_GLOBAL, 
-    //                                                                     0.125f,
-    //                                                                     Wq_sign_mantissa_gpu,
-    //                                                                     Wq_compressed_full_gpu,
-    //                                                                     Wq_bitmap1_gpu,
-    //                                                                     Wq_bitmap2_gpu,
-    //                                                                     Wq_bitmap3_gpu,
-    //                                                                     Wq_TileOffsets_median_gpu,
-    //                                                                     Wq_TileOffsets_global_gpu,
-    //                                                                     Wq_max_high_freq_count,
-    //                                                                     Wq_max_full_count,
-    //                                                                     Wq_start_exp,
-    //                                                                     Wq_M_GLOBAL,
-    //                                                                     X_N_GLOBAL,
-    //                                                                     Wk_N_GLOBAL,
-    //                                                                     Wk_sign_mantissa_gpu,
-    //                                                                     Wk_compressed_full_gpu,
-    //                                                                     Wk_bitmap1_gpu,
-    //                                                                     Wk_bitmap2_gpu,
-    //                                                                     Wk_bitmap3_gpu,
-    //                                                                     Wk_TileOffsets_median_gpu,
-    //                                                                     Wk_TileOffsets_global_gpu,
-    //                                                                     Wk_max_high_freq_count,
-    //                                                                     Wk_max_full_count,
-    //                                                                     Wk_start_exp,
-    //                                                                     Wk_M_GLOBAL,
-    //                                                                     X_N_GLOBAL,
-    //                                                                     Wk_N_GLOBAL,                                                                
-    //                                                                     X_device);
-    // }
-    // flush_l2_cache();
+    // print_bf16_matrix("Output O baseline (compute_attn_v2)", O_host, Wq_M_GLOBAL, X_N_GLOBAL);
+    std::memcpy(O_host_baseline, O_host, sizeof(__nv_bfloat16) * Wq_M_GLOBAL * X_N_GLOBAL);
+    cudaDeviceSynchronize();
+
+    for (int i = 0; i < WARM_UP_ITERATION; i++) 
+    {
+        compute_attn_v2_zipserv<<<gridDim, blockDim, shared_mem_size>>>(O_device, 
+                                                                        K_device, V_device, 
+                                                                        Wk_N_GLOBAL, Wv_N_GLOBAL,  X_N_GLOBAL,
+                                                                        X_N_GLOBAL, 
+                                                                        0.125f,
+                                                                        Wq_sign_mantissa_gpu,
+                                                                        Wq_compressed_full_gpu,
+                                                                        Wq_bitmap1_gpu,
+                                                                        Wq_bitmap2_gpu,
+                                                                        Wq_bitmap3_gpu,
+                                                                        Wq_TileOffsets_median_gpu,
+                                                                        Wq_TileOffsets_global_gpu,
+                                                                        Wq_max_high_freq_count,
+                                                                        Wq_max_full_count,
+                                                                        Wq_start_exp,
+                                                                        Wq_M_GLOBAL,
+                                                                        X_N_GLOBAL,
+                                                                        Wk_N_GLOBAL,
+                                                                        Wk_sign_mantissa_gpu,
+                                                                        Wk_compressed_full_gpu,
+                                                                        Wk_bitmap1_gpu,
+                                                                        Wk_bitmap2_gpu,
+                                                                        Wk_bitmap3_gpu,
+                                                                        Wk_TileOffsets_median_gpu,
+                                                                        Wk_TileOffsets_global_gpu,
+                                                                        Wk_max_high_freq_count,
+                                                                        Wk_max_full_count,
+                                                                        Wk_start_exp,
+                                                                        Wk_M_GLOBAL,
+                                                                        X_N_GLOBAL,
+                                                                        Wk_N_GLOBAL,                                                                
+                                                                        X_device);
+    }
+    flush_l2_cache();
     
 
-    // float total_milliseconds_compute_attn_zipserv = 0.0f;
-    // for (int i = 0; i < BENCHMARK_ITERATION; i++) 
-    // {
-    //     flush_l2_cache();
-    //     cudaEventRecord(start);
-    //     compute_attn_v2_zipserv<<<gridDim, blockDim, shared_mem_size>>>(O_device, 
-    //                                                                     K_device, V_device, 
-    //                                                                     Wk_N_GLOBAL, Wv_N_GLOBAL,  X_N_GLOBAL,
-    //                                                                     X_N_GLOBAL, 
-    //                                                                     0.125f,
-    //                                                                     Wq_sign_mantissa_gpu,
-    //                                                                     Wq_compressed_full_gpu,
-    //                                                                     Wq_bitmap1_gpu,
-    //                                                                     Wq_bitmap2_gpu,
-    //                                                                     Wq_bitmap3_gpu,
-    //                                                                     Wq_TileOffsets_median_gpu,
-    //                                                                     Wq_TileOffsets_global_gpu,
-    //                                                                     Wq_max_high_freq_count,
-    //                                                                     Wq_max_full_count,
-    //                                                                     Wq_start_exp,
-    //                                                                     Wq_M_GLOBAL,
-    //                                                                     X_N_GLOBAL,
-    //                                                                     Wk_N_GLOBAL,
-    //                                                                     Wk_sign_mantissa_gpu,
-    //                                                                     Wk_compressed_full_gpu,
-    //                                                                     Wk_bitmap1_gpu,
-    //                                                                     Wk_bitmap2_gpu,
-    //                                                                     Wk_bitmap3_gpu,
-    //                                                                     Wk_TileOffsets_median_gpu,
-    //                                                                     Wk_TileOffsets_global_gpu,
-    //                                                                     Wk_max_high_freq_count,
-    //                                                                     Wk_max_full_count,
-    //                                                                     Wk_start_exp,
-    //                                                                     Wk_M_GLOBAL,
-    //                                                                     X_N_GLOBAL,
-    //                                                                     Wk_N_GLOBAL,                                                                
-    //                                                                     X_device);
-    //     cudaEventRecord(stop);
-    //     cudaEventSynchronize(stop);
-    //     float iter_time = 0.0f;
-    //     cudaEventElapsedTime(&iter_time, start, stop);
-    //     total_milliseconds_compute_attn_zipserv += iter_time;
-    // }
-    // float milliseconds_compute_attn_zipserv = total_milliseconds_compute_attn_zipserv / BENCHMARK_ITERATION;
-    // printf("Average compute_attn_v2_zipserv execution time over %d iterations: %f ms\n", BENCHMARK_ITERATION, milliseconds_compute_attn_zipserv);
+    float total_milliseconds_compute_attn_zipserv = 0.0f;
+    for (int i = 0; i < BENCHMARK_ITERATION; i++) 
+    {
+        flush_l2_cache();
+        cudaEventRecord(start);
+        compute_attn_v2_zipserv<<<gridDim, blockDim, shared_mem_size>>>(O_device, 
+                                                                        K_device, V_device, 
+                                                                        Wk_N_GLOBAL, Wv_N_GLOBAL,  X_N_GLOBAL,
+                                                                        X_N_GLOBAL, 
+                                                                        0.125f,
+                                                                        Wq_sign_mantissa_gpu,
+                                                                        Wq_compressed_full_gpu,
+                                                                        Wq_bitmap1_gpu,
+                                                                        Wq_bitmap2_gpu,
+                                                                        Wq_bitmap3_gpu,
+                                                                        Wq_TileOffsets_median_gpu,
+                                                                        Wq_TileOffsets_global_gpu,
+                                                                        Wq_max_high_freq_count,
+                                                                        Wq_max_full_count,
+                                                                        Wq_start_exp,
+                                                                        Wq_M_GLOBAL,
+                                                                        X_N_GLOBAL,
+                                                                        Wk_N_GLOBAL,
+                                                                        Wk_sign_mantissa_gpu,
+                                                                        Wk_compressed_full_gpu,
+                                                                        Wk_bitmap1_gpu,
+                                                                        Wk_bitmap2_gpu,
+                                                                        Wk_bitmap3_gpu,
+                                                                        Wk_TileOffsets_median_gpu,
+                                                                        Wk_TileOffsets_global_gpu,
+                                                                        Wk_max_high_freq_count,
+                                                                        Wk_max_full_count,
+                                                                        Wk_start_exp,
+                                                                        Wk_M_GLOBAL,
+                                                                        X_N_GLOBAL,
+                                                                        Wk_N_GLOBAL,                                                                
+                                                                        X_device);
+        cudaEventRecord(stop);
+        cudaEventSynchronize(stop);
+        float iter_time = 0.0f;
+        cudaEventElapsedTime(&iter_time, start, stop);
+        total_milliseconds_compute_attn_zipserv += iter_time;
+    }
+    float milliseconds_compute_attn_zipserv = total_milliseconds_compute_attn_zipserv / BENCHMARK_ITERATION;
+    printf("Average compute_attn_v2_zipserv execution time over %d iterations: %f ms\n", BENCHMARK_ITERATION, milliseconds_compute_attn_zipserv);
     
-    // cudaDeviceSynchronize();
+    cudaDeviceSynchronize();
 
     CUDA_CHECK(cudaDeviceSynchronize());
     CUDA_CHECK(cudaMemcpy(O_host, O_device, sizeof(__nv_bfloat16) * X_N_GLOBAL * Wq_M_GLOBAL, cudaMemcpyDeviceToHost)); 
 
-    print_bf16_matrix("Output O", O_host, Wq_M_GLOBAL, X_N_GLOBAL);
+    // print_bf16_matrix("Output O zipserv (compute_attn_v2_zipserv)", O_host, Wq_M_GLOBAL, X_N_GLOBAL);
+
+    double max_abs_error_O = 0.0;
+    double mean_abs_error_O = 0.0;
+    double ref_l2_sq = 0.0;
+    double diff_l2_sq = 0.0;
+    int max_err_idx = 0;
+    int total_O_elems = Wq_M_GLOBAL * X_N_GLOBAL;
+    int count_abs_gt_1e3 = 0;
+    int count_abs_gt_1e4 = 0;
+    std::vector<double> abs_err_list;
+    abs_err_list.reserve(total_O_elems);
+    for (int i = 0; i < total_O_elems; ++i) {
+        float ref_v = __bfloat162float(O_host_baseline[i]);
+        float zip_v = __bfloat162float(O_host[i]);
+        double diff = (double)ref_v - (double)zip_v;
+        double abs_err = fabs(diff);
+        mean_abs_error_O += abs_err;
+        ref_l2_sq += (double)ref_v * (double)ref_v;
+        diff_l2_sq += diff * diff;
+        abs_err_list.push_back(abs_err);
+        if (abs_err > 1e-3) ++count_abs_gt_1e3;
+        if (abs_err > 1e-4) ++count_abs_gt_1e4;
+        if (abs_err > max_abs_error_O) {
+            max_abs_error_O = abs_err;
+            max_err_idx = i;
+        }
+    }
+    mean_abs_error_O /= total_O_elems;
+
+    std::sort(abs_err_list.begin(), abs_err_list.end());
+    auto percentile_value = [&](double p) {
+        int idx = static_cast<int>(p * (total_O_elems - 1));
+        return abs_err_list[idx];
+    };
+    double p50_abs_error_O = percentile_value(0.50);
+    double p90_abs_error_O = percentile_value(0.90);
+    double p99_abs_error_O = percentile_value(0.99);
+
+    double rel_l2_error_O = 0.0;
+    if (ref_l2_sq > 0.0) {
+        rel_l2_error_O = sqrt(diff_l2_sq / ref_l2_sq);
+    }
+
+    int max_err_row = max_err_idx / X_N_GLOBAL;
+    int max_err_col = max_err_idx % X_N_GLOBAL;
+    float ref_max = __bfloat162float(O_host_baseline[max_err_idx]);
+    float zip_max = __bfloat162float(O_host[max_err_idx]);
+    printf("O baseline vs zipserv: max_abs_error=%lf, mean_abs_error=%lf\n", max_abs_error_O, mean_abs_error_O);
+        printf("O error stats: rel_l2=%le, p50_abs=%le, p90_abs=%le, p99_abs=%le\n",
+            rel_l2_error_O, p50_abs_error_O, p90_abs_error_O, p99_abs_error_O);
+        printf("O error counts: abs>1e-3: %d/%d, abs>1e-4: %d/%d\n",
+            count_abs_gt_1e3, total_O_elems, count_abs_gt_1e4, total_O_elems);
+    printf("Max error at (row=%d, col=%d): baseline=%f zipserv=%f diff=%f\n",
+           max_err_row, max_err_col, ref_max, zip_max, ref_max - zip_max);
 
     return 0;
 }

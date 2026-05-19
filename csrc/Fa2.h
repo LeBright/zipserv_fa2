@@ -68,7 +68,7 @@ using GmemTiledCopyO = decltype(make_tiled_copy(Copy_Atom<AutoVectorizingCopyWit
 using SmemLayoutAtomO = decltype(composition(Swizzle<kSwizzle, 3, 3>{},
                                              Layout<Shape<_8, Int<kBlockKSmem>>,
                                              Stride<Int<kBlockKSmem>, _1>>{}));
-using SmemLayoutAtom = decltype(composition(Swizzle<0, 0, 0>{},
+using SmemLayoutAtom = decltype(composition(Swizzle<kSwizzle, 3, 3>{},
                                             Layout<Shape<_8, Int<HeadDim>>,
                                             Stride<Int<HeadDim>, _1>>{}));
 using SmemLayoutQ = decltype(tile_to_shape(SmemLayoutAtom{}, 

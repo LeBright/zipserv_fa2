@@ -2,6 +2,7 @@
 #include "softmax.h"
 #include "L_Kernel.cuh"
 #include <cutlass/numeric_conversion.h>
+#include <float.h>
 
 __global__ void compute_attn_v2(void* O_ptr, 
                                 const void* Q_ptr, const void* K_ptr, const void* V_ptr, 
@@ -12,7 +13,6 @@ __global__ void compute_attn_v2(void* O_ptr,
     const int m_block = blockIdx.x; // one block process Q_len/kBlockM (AKA N/Br in fa2 paper ) m_blocks 
     const int base_id = blockIdx.y; // it tells us the block process which head(base_id%headnum) of which batch(base_id/headnum) 
     const int tidx = threadIdx.x;  
-    printf("@@@@@@@@@@@@@@@@@@@@@@@@@@@\n");
     if(m_block * kBlockM >= q_len) return; // if the block start processing token id exceed actual q_len, return directly
 
     extern __shared__ __nv_bfloat16 smem[];
@@ -108,33 +108,7 @@ __global__ void compute_attn_v2(void* O_ptr,
     }
 
     // copy KV
-        constexpr bool kDebugPrintKCompare = true;
-    constexpr int kDebugPrintRows = 4;
-    constexpr int kDebugPrintCols = 16;
-    if constexpr (kDebugPrintKCompare) {
-        if (m_block == 0 && base_id == 0) {
-            // Baseline: direct load K tile 0 from global memory.
-            gK = local_tile(K,
-                            make_tile(Int<kBlockN>{}, Int<HeadDim>{}),
-                            make_coord(0, _));
-            tKgK = gmem_thr_copy_QKV.partition_S(gK(_, _, 0));
-            cute::copy(gmem_tiled_copy_QKV, tKgK, tKsK);
-            cp_async_fence();
-            cp_async_wait<0>();
-            __syncthreads();
-            if (tidx == 0) {
-                printf("[DBG][K-direct][blk=0]\n");
-                for (int r = 0; r < kDebugPrintRows; ++r) {
-                    printf("  row%d: ", r);
-                    for (int c = 0; c < kDebugPrintCols; ++c) {
-                        int idx = r * kDebugPrintCols + c;
-                        printf("%.4f ", __bfloat162float(sK(idx)));
-                    }
-                    printf("\n");
-                }
-            }
-        }
-    }
+    cute::copy(gmem_tiled_copy_QKV, tKgK, tKsK);
     cp_async_fence();
     cute::copy(gmem_tiled_copy_QKV, tVgV, tVsV);
     cp_async_fence();   
@@ -238,9 +212,9 @@ __global__ void compute_attn_v2(void* O_ptr,
 
         if(n_block<n_block_max-1)
         {
-            gK = local_tile(K, 
+            gK = local_tile(K,
                             make_tile(Int<kBlockN>{}, Int<HeadDim>{}),
-                            make_coord(n_block+1, _));
+                            make_coord(n_block + 1, _));
             tKgK = gmem_thr_copy_QKV.partition_S(gK(_, _, 0));
             cute::copy(gmem_tiled_copy_QKV, tKgK, tKsK);
         }
@@ -715,9 +689,6 @@ __global__ void compute_attn_v2_zipserv(
                                           Q_M_Global, Q_N_Global, Q_K_Global,
                                           base_id,
                                           m_block, 0);
-    cp_async_fence();
-    cp_async_wait<0>();
-    __syncthreads();
 
     // multiply sm scale
     __nv_bfloat162 sm_bf162 = make_bfloat162(__float2bfloat16_rn(sm_scale), __float2bfloat16_rn(sm_scale));
@@ -736,58 +707,14 @@ __global__ void compute_attn_v2_zipserv(
     }
 
     // copy KV
-    constexpr bool kDebugPrintKCompare = true;
-    constexpr int kDebugPrintRows = 4;
-    constexpr int kDebugPrintCols = 16;
-    if constexpr (kDebugPrintKCompare) {
-        if (m_block == 0 && base_id == 0) {
-            // Baseline: direct load K tile 0 from global memory.
-            gK = local_tile(K,
-                            make_tile(Int<kBlockN>{}, Int<HeadDim>{}),
-                            make_coord(0, _));
-            tKgK = gmem_thr_copy_QKV.partition_S(gK(_, _, 0));
-            cute::copy(gmem_tiled_copy_QKV, tKgK, tKsK);
-            cp_async_fence();
-            cp_async_wait<0>();
-            __syncthreads();
-            if (tidx == 0) {
-                printf("[DBG][K-direct][blk=0]\n");
-                for (int r = 0; r < kDebugPrintRows; ++r) {
-                    printf("  row%d: ", r);
-                    for (int c = 0; c < kDebugPrintCols; ++c) {
-                        int idx = r * kDebugPrintCols + c;
-                        printf("%.4f ", __bfloat162float(sK(idx)));
-                    }
-                    printf("\n");
-                }
-            }
-        }
-    }
-
-    BF16TripleBitmap_MM_Kernel_prepareQKV(K_smem_ptr, 
-                                          K_SignMantissa, K_CompressedFull, K_Bitmap1, K_Bitmap2, K_Bitmap3, 
-                                          K_TileOffsets_Median, K_TileOffsets_Global, K_max_high_freq_count, K_max_full_count, 
+    BF16TripleBitmap_MM_Kernel_prepareQKV(K_smem_ptr,
+                                          K_SignMantissa, K_CompressedFull, K_Bitmap1, K_Bitmap2, K_Bitmap3,
+                                          K_TileOffsets_Median, K_TileOffsets_Global, K_max_high_freq_count, K_max_full_count,
                                           K_start_exp,
                                           X,
                                           K_M_Global, K_N_Global, K_K_Global,
                                           base_id,
                                           0, 1);
-    if constexpr (kDebugPrintKCompare) {
-        if (m_block == 0 && base_id == 0) {
-            __syncthreads();
-            if (tidx == 0) {
-                printf("[DBG][K-prepare][blk=0]\n");
-                for (int r = 0; r < kDebugPrintRows; ++r) {
-                    printf("  row%d: ", r);
-                    for (int c = 0; c < kDebugPrintCols; ++c) {
-                        int idx = r * kDebugPrintCols + c;
-                        printf("%.4f ", __bfloat162float(sK(idx)));
-                    }
-                    printf("\n");
-                }
-            }
-        }
-    }
     cp_async_fence();
     cute::copy(gmem_tiled_copy_QKV, tVgV, tVsV);
     cp_async_fence();   
@@ -889,60 +816,6 @@ __global__ void compute_attn_v2_zipserv(
         }
         __syncthreads();
 
-        if(n_block<n_block_max-1)
-        {
-            if constexpr (kDebugPrintKCompare) {
-                if (m_block == 0 && base_id == 0 && n_block < 2) {
-                    // Baseline: direct load next K tile from global memory.
-                    gK = local_tile(K,
-                                    make_tile(Int<kBlockN>{}, Int<HeadDim>{}),
-                                    make_coord(n_block + 1, _));
-                    tKgK = gmem_thr_copy_QKV.partition_S(gK(_, _, 0));
-                    cute::copy(gmem_tiled_copy_QKV, tKgK, tKsK);
-                    cp_async_fence();
-                    cp_async_wait<0>();
-                    __syncthreads();
-                    if (tidx == 0) {
-                        printf("[DBG][K-direct][blk=%d]\n", n_block + 1);
-                        for (int r = 0; r < kDebugPrintRows; ++r) {
-                            printf("  row%d: ", r);
-                            for (int c = 0; c < kDebugPrintCols; ++c) {
-                                int idx = r * kDebugPrintCols + c;
-                                printf("%.4f ", __bfloat162float(sK(idx)));
-                            }
-                            printf("\n");
-                        }
-                    }
-                }
-            }
-
-            BF16TripleBitmap_MM_Kernel_prepareQKV(K_smem_ptr, 
-                                                K_SignMantissa, K_CompressedFull, K_Bitmap1, K_Bitmap2, K_Bitmap3, 
-                                                K_TileOffsets_Median, K_TileOffsets_Global, K_max_high_freq_count, K_max_full_count, 
-                                                K_start_exp,
-                                                X,
-                                                K_M_Global, K_N_Global, K_K_Global,
-                                                base_id,
-                                                n_block+1, 1);
-            if constexpr (kDebugPrintKCompare) {
-                if (m_block == 0 && base_id == 0 && n_block < 2) {
-                    __syncthreads();
-                    if (tidx == 0) {
-                        printf("[DBG][K-prepare][blk=%d]\n", n_block + 1);
-                        for (int r = 0; r < kDebugPrintRows; ++r) {
-                            printf("  row%d: ", r);
-                            for (int c = 0; c < kDebugPrintCols; ++c) {
-                                int idx = r * kDebugPrintCols + c;
-                                printf("%.4f ", __bfloat162float(sK(idx)));
-                            }
-                            printf("\n");
-                        }
-                    }
-                }
-            }
-        }
-        cp_async_fence();
-
         // wait v
         if (n_block < n_block_max - 1) 
         {
@@ -983,8 +856,24 @@ __global__ void compute_attn_v2_zipserv(
 
         __syncthreads();
 
+        // KEY TIMING FIX:
+        // Prepare next K only after current P*V has fully consumed V_smem.
+        // If K prepare is moved earlier, BF16TripleBitmap_MM_Kernel_prepareQKV may
+        // use overlapping shared-memory scratch space and clobber live V data,
+        // which showed up as O mismatch vs baseline.
+
         if(n_block<n_block_max-1)
         {
+            // Intentionally placed here (after P*V, before loading next V tile).
+            BF16TripleBitmap_MM_Kernel_prepareQKV(K_smem_ptr,
+                                                   K_SignMantissa, K_CompressedFull, K_Bitmap1, K_Bitmap2, K_Bitmap3,
+                                                   K_TileOffsets_Median, K_TileOffsets_Global, K_max_high_freq_count, K_max_full_count,
+                                                   K_start_exp,
+                                                   X,
+                                                   K_M_Global, K_N_Global, K_K_Global,
+                                                   base_id,
+                                                   n_block+1, 1);
+
             gV = local_tile(V, 
                             make_tile(Int<kBlockN>{}, Int<HeadDim>{}),
                             make_coord(n_block+1, _));
