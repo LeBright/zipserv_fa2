@@ -115,14 +115,14 @@ int main()
     cudaEventCreate(&start);
     cudaEventCreate(&stop);
 
-    int Wq_M_GLOBAL = 512;
-    int Wq_N_GLOBAL = 512;
-    int Wk_M_GLOBAL = 512;
-    int Wk_N_GLOBAL = 512;
-    int Wv_M_GLOBAL = 512;
-    int Wv_N_GLOBAL = 512;
-    int X_M_GLOBAL  = 512;
-    int X_N_GLOBAL  = 512;
+    int Wq_M_GLOBAL = 1024;
+    int Wq_N_GLOBAL = 1024;
+    int Wk_M_GLOBAL = 1024;
+    int Wk_N_GLOBAL = 1024;
+    int Wv_M_GLOBAL = 1024;
+    int Wv_N_GLOBAL = 1024;
+    int X_M_GLOBAL  = 1024;
+    int X_N_GLOBAL  = 1024;
 
     int SPLIT_K = 1;
 
@@ -668,7 +668,7 @@ int main()
 
     cudaDeviceSynchronize();
 
-    dim3 gridDim(Wq_M_GLOBAL/kBlockM, X_N_GLOBAL/HeadDim, 1);
+    dim3 gridDim(Wq_M_GLOBAL/kBlockM, X_M_GLOBAL/HeadDim, 1);
     dim3 blockDim(32*4,1,1);
     int shared_mem_size = (kBlockM * HeadDim * sizeof(__nv_bfloat16)) * 5; 
     for (int i = 0; i < WARM_UP_ITERATION; i++) 
@@ -743,7 +743,7 @@ int main()
                                                                         Wq_start_exp,
                                                                         Wq_M_GLOBAL,
                                                                         X_N_GLOBAL,
-                                                                        Wk_N_GLOBAL,
+                                                                        Wq_N_GLOBAL,
                                                                         Wk_sign_mantissa_gpu,
                                                                         Wk_compressed_full_gpu,
                                                                         Wk_bitmap1_gpu,
@@ -784,7 +784,7 @@ int main()
                                                                         Wq_start_exp,
                                                                         Wq_M_GLOBAL,
                                                                         X_N_GLOBAL,
-                                                                        Wk_N_GLOBAL,
+                                                                        Wq_N_GLOBAL,
                                                                         Wk_sign_mantissa_gpu,
                                                                         Wk_compressed_full_gpu,
                                                                         Wk_bitmap1_gpu,
