@@ -318,6 +318,7 @@ __global__ void compute_attn_v2(void* O_ptr,
 // B in global, transposed
 __device__ void BF16TripleBitmap_MM_Kernel_prepareQKV(
     __nv_bfloat16* smem_C,
+    __nv_bfloat16* workplace,
     const uint8_t* SignMantissa,
     const __nv_bfloat16* CompressedFull,
     const uint64_t* Bitmap1,
@@ -352,7 +353,7 @@ __device__ void BF16TripleBitmap_MM_Kernel_prepareQKV(
     // extern __shared__ __nv_bfloat16 smem1[];
     
     // B matrix double buffering
-    __nv_bfloat16* smem_B = smem_C;
+    __nv_bfloat16* smem_B = workplace;
     // A matrix related data double buffering
     const int bitmap_size = 64;
     
@@ -633,9 +634,9 @@ __global__ void compute_attn_v2_zipserv(
                         make_stride(row_stride, _1{}));
 
     // global memory
-    auto gK = local_tile(K,
-                         make_tile(Int<kBlockN>{}, Int<HeadDim>{}),
-                         make_coord(0, _));
+    // auto gK = local_tile(K,
+    //                      make_tile(Int<kBlockN>{}, Int<HeadDim>{}),
+    //                      make_coord(0, _));
     auto gV = local_tile(V,
                          make_tile(Int<kBlockN>{}, Int<HeadDim>{}),
                          make_coord(0, _));
@@ -651,7 +652,7 @@ __global__ void compute_attn_v2_zipserv(
     GmemTiledCopyQKV gmem_tiled_copy_QKV;
     auto gmem_thr_copy_QKV = gmem_tiled_copy_QKV.get_thread_slice(tidx);
     auto tQsQ = gmem_thr_copy_QKV.partition_D(sQ);
-    auto tKgK = gmem_thr_copy_QKV.partition_S(gK(_, _, 0));
+    // auto tKgK = gmem_thr_copy_QKV.partition_S(gK(_, _, 0));
     auto tKsK = gmem_thr_copy_QKV.partition_D(sK);
     auto tVgV = gmem_thr_copy_QKV.partition_S(gV(_, _, 0));
     auto tVsV = gmem_thr_copy_QKV.partition_D(sV);
@@ -682,6 +683,7 @@ __global__ void compute_attn_v2_zipserv(
     // copy Q
     // cute::copy(gmem_tiled_copy_QKV, tQgQ, tQsQ);
     BF16TripleBitmap_MM_Kernel_prepareQKV(Q_smem_ptr, 
+                                          Q_smem_ptr, 
                                           Q_SignMantissa, Q_CompressedFull, Q_Bitmap1, Q_Bitmap2, Q_Bitmap3, 
                                           Q_TileOffsets_Median, Q_TileOffsets_Global, Q_max_high_freq_count, Q_max_full_count, 
                                           Q_start_exp,
@@ -708,6 +710,7 @@ __global__ void compute_attn_v2_zipserv(
 
     // copy KV
     BF16TripleBitmap_MM_Kernel_prepareQKV(K_smem_ptr,
+                                          K_smem_ptr,
                                           K_SignMantissa, K_CompressedFull, K_Bitmap1, K_Bitmap2, K_Bitmap3,
                                           K_TileOffsets_Median, K_TileOffsets_Global, K_max_high_freq_count, K_max_full_count,
                                           K_start_exp,
@@ -715,7 +718,6 @@ __global__ void compute_attn_v2_zipserv(
                                           K_M_Global, K_N_Global, K_K_Global,
                                           base_id,
                                           0, 1);
-    cp_async_fence();
     cute::copy(gmem_tiled_copy_QKV, tVgV, tVsV);
     cp_async_fence();   
 
@@ -746,7 +748,6 @@ __global__ void compute_attn_v2_zipserv(
         clear(rAccScore);
 
         // wait K
-        cp_async_wait<1>();
         __syncthreads();
 
         // S=QK^T
@@ -856,31 +857,26 @@ __global__ void compute_attn_v2_zipserv(
 
         __syncthreads();
 
-        // KEY TIMING FIX:
-        // Prepare next K only after current P*V has fully consumed V_smem.
-        // If K prepare is moved earlier, BF16TripleBitmap_MM_Kernel_prepareQKV may
-        // use overlapping shared-memory scratch space and clobber live V data,
-        // which showed up as O mismatch vs baseline.
-
         if(n_block<n_block_max-1)
         {
-            // Intentionally placed here (after P*V, before loading next V tile).
             BF16TripleBitmap_MM_Kernel_prepareQKV(K_smem_ptr,
-                                                   K_SignMantissa, K_CompressedFull, K_Bitmap1, K_Bitmap2, K_Bitmap3,
-                                                   K_TileOffsets_Median, K_TileOffsets_Global, K_max_high_freq_count, K_max_full_count,
-                                                   K_start_exp,
-                                                   X,
-                                                   K_M_Global, K_N_Global, K_K_Global,
-                                                   base_id,
-                                                   n_block+1, 1);
+                                                  K_smem_ptr,
+                                                  K_SignMantissa, K_CompressedFull, K_Bitmap1, K_Bitmap2, K_Bitmap3,
+                                                  K_TileOffsets_Median, K_TileOffsets_Global, K_max_high_freq_count, K_max_full_count,
+                                                  K_start_exp,
+                                                  X,
+                                                  K_M_Global, K_N_Global, K_K_Global,
+                                                  base_id,
+                                                  n_block+1, 1);
 
             gV = local_tile(V, 
                             make_tile(Int<kBlockN>{}, Int<HeadDim>{}),
                             make_coord(n_block+1, _));
             tVgV = gmem_thr_copy_QKV.partition_S(gV(_, _, 0));
             cute::copy(gmem_tiled_copy_QKV, tVgV, tVsV);
+            cp_async_fence();
         }
-        cp_async_fence();
+        
     }   
 
     #pragma unroll

@@ -13,13 +13,11 @@
     do {                                                                        \
         cudaError_t _err = (call);                                              \
         if (_err != cudaSuccess) {                                              \
-            fprintf(stderr, "CUDA error at %s:%d: %s (%d)\n",                \
-                    __FILE__, __LINE__, cudaGetErrorString(_err), (int)_err);  \
-            std::exit(EXIT_FAILURE);                                             \
+            fprintf(stderr, "CUDA error at %s:%d: %s (%d)\n",                   \
+                    __FILE__, __LINE__, cudaGetErrorString(_err), (int)_err);   \
+            std::exit(EXIT_FAILURE);                                            \
         }                                                                       \
     } while (0)
-
-
 
 void print_bf16_matrix(const char* name, __nv_bfloat16* matrix, int rows, int cols, int max_rows = 128, int max_cols = 32) {
     printf("\n===== %s [%dx%d] =====\n", name, rows, cols);
@@ -48,33 +46,6 @@ void print_bf16_matrix(const char* name, __nv_bfloat16* matrix, int rows, int co
                i, __bfloat162float(matrix[i]), sign, exponent, mantissa, bits);
     }
     printf("\n");
-}
-
-void print_row_activity(const char* name, __nv_bfloat16* matrix, int rows, int cols, int sample_cols = 8) {
-    printf("\n===== %s row activity =====\n", name);
-
-    auto print_row = [&](int row) {
-        int nonzero_count = 0;
-        float row_sum = 0.0f;
-        for (int col = 0; col < cols; ++col) {
-            float value = __bfloat162float(matrix[row * cols + col]);
-            row_sum += value;
-            if (value != 0.0f) {
-                ++nonzero_count;
-            }
-        }
-
-        printf("row %3d: nonzero=%3d/%3d sum=%10.4f samples:", row, nonzero_count, cols, row_sum);
-        for (int col = 0; col < std::min(cols, sample_cols); ++col) {
-            printf(" %8.4f", __bfloat162float(matrix[row * cols + col]));
-        }
-        printf("\n");
-    };
-
-    int probe_rows[] = {0, std::max(0, rows / 2 - 1), std::min(rows - 1, rows / 2), rows - 1};
-    for (int probe_row : probe_rows) {
-        print_row(probe_row);
-    }
 }
 
 void flush_l2_cache() {
@@ -115,70 +86,68 @@ int main()
     cudaEventCreate(&start);
     cudaEventCreate(&stop);
 
-    int Wq_M_GLOBAL = 1024;
-    int Wq_N_GLOBAL = 1024;
-    int Wk_M_GLOBAL = 1024;
-    int Wk_N_GLOBAL = 1024;
-    int Wv_M_GLOBAL = 1024;
-    int Wv_N_GLOBAL = 1024;
-    int X_M_GLOBAL  = 1024;
+    int Wq_M_GLOBAL = 256;
+    int Wq_N_GLOBAL = 256;
+    int Wk_M_GLOBAL = 256;
+    int Wk_N_GLOBAL = 256;
+    int Wv_M_GLOBAL = 256;
+    int Wv_N_GLOBAL = 256;
+    int X_M_GLOBAL  = 256;
     int X_N_GLOBAL  = 1024;
 
-    int SPLIT_K = 1;
-
     // Host memory
-    __nv_bfloat16* Wq_host            = NULL;  // row major    
-    __nv_bfloat16* Wk_host            = NULL;  // row major
-    __nv_bfloat16* Wv_host            = NULL;  // row major
-    __nv_bfloat16* X_host            = NULL;  // col major
-    __nv_bfloat16* X_Transposed_host = NULL;  // row major
+    __nv_bfloat16* Wq_host             = NULL;   
+    __nv_bfloat16* Wk_host             = NULL;  
+    __nv_bfloat16* Wv_host             = NULL;  
+    __nv_bfloat16* X_host              = NULL;   
+    __nv_bfloat16* X_Transposed_host   = NULL;   
 
-    __nv_bfloat16* Q_host            = NULL;  // row major
-    __nv_bfloat16* Q_host_cublas     = NULL;  // row major
-    __nv_bfloat16* K_host            = NULL;  // row major
-    __nv_bfloat16* K_host_cublas     = NULL;  // row major
-    __nv_bfloat16* V_host            = NULL;  // row major
-    __nv_bfloat16* V_host_cublas     = NULL;  // row major
-    __nv_bfloat16* O_host            = NULL;  // row major
-    __nv_bfloat16* O_host_baseline   = NULL;  // row major
+    __nv_bfloat16* Q_host              = NULL;  
+    __nv_bfloat16* Q_host_cublas       = NULL;  
+    __nv_bfloat16* K_host              = NULL;  
+    __nv_bfloat16* K_host_cublas       = NULL;  
+    __nv_bfloat16* V_host              = NULL;  
+    __nv_bfloat16* V_host_cublas       = NULL;  
+    __nv_bfloat16* O_host              = NULL;  
+    __nv_bfloat16* O_host_baseline     = NULL;  
 
     // Device memory
-    __nv_bfloat16* Wq_device            = NULL;  // row major    
-    __nv_bfloat16* Wk_device            = NULL;  // row major
-    __nv_bfloat16* Wv_device            = NULL;  // row major
-    __nv_bfloat16* X_device            = NULL;  // col major
-    __nv_bfloat16* X_Transposed_device = NULL;  // row major
+    __nv_bfloat16* Wq_device           = NULL;
+    __nv_bfloat16* Wk_device           = NULL;
+    __nv_bfloat16* Wv_device           = NULL;
+    __nv_bfloat16* X_device            = NULL; 
+    __nv_bfloat16* X_Transposed_device = NULL; 
 
-    __nv_bfloat16* Q_device            = NULL;  // row major
-    __nv_bfloat16* Q_device_cublas     = NULL;  // row major
-    __nv_bfloat16* K_device            = NULL;  // row major
-    __nv_bfloat16* K_device_cublas     = NULL;  // row major
-    __nv_bfloat16* V_device            = NULL;  // row major
-    __nv_bfloat16* V_device_cublas     = NULL;  // row major
-    __nv_bfloat16* Q_host_cpu            = NULL;  // row major
-    __nv_bfloat16* K_host_cpu            = NULL;  // row major
-    __nv_bfloat16* V_host_cpu            = NULL;  // row major
-    __nv_bfloat16* O_device            = NULL;  // row major
+    __nv_bfloat16* Q_device            = NULL;  
+    __nv_bfloat16* Q_device_cublas     = NULL;  
+    __nv_bfloat16* K_device            = NULL;  
+    __nv_bfloat16* K_device_cublas     = NULL;  
+    __nv_bfloat16* V_device            = NULL;  
+    __nv_bfloat16* V_device_cublas     = NULL;  
+    __nv_bfloat16* Q_host_cpu          = NULL;
+    __nv_bfloat16* K_host_cpu          = NULL;
+    __nv_bfloat16* V_host_cpu          = NULL;
+    __nv_bfloat16* O_device            = NULL;  
     
     printf("Allocating host memory...\n");
     Wq_host            = (__nv_bfloat16*)malloc(sizeof(__nv_bfloat16) * Wq_M_GLOBAL * Wq_N_GLOBAL);
     Wk_host            = (__nv_bfloat16*)malloc(sizeof(__nv_bfloat16) * Wk_M_GLOBAL * Wk_N_GLOBAL);
     Wv_host            = (__nv_bfloat16*)malloc(sizeof(__nv_bfloat16) * Wv_M_GLOBAL * Wv_N_GLOBAL);
-    X_host            = (__nv_bfloat16*)malloc(sizeof(__nv_bfloat16) * X_M_GLOBAL * X_N_GLOBAL);
-    X_Transposed_host = (__nv_bfloat16*)malloc(sizeof(__nv_bfloat16) * X_N_GLOBAL * X_M_GLOBAL);
+    X_host             = (__nv_bfloat16*)malloc(sizeof(__nv_bfloat16) * X_M_GLOBAL * X_N_GLOBAL);
+    X_Transposed_host  = (__nv_bfloat16*)malloc(sizeof(__nv_bfloat16) * X_N_GLOBAL * X_M_GLOBAL);
 
-    Q_host            = (__nv_bfloat16*)malloc(sizeof(__nv_bfloat16) * Wq_M_GLOBAL * X_N_GLOBAL);
-    Q_host_cublas     = (__nv_bfloat16*)malloc(sizeof(__nv_bfloat16) * Wq_M_GLOBAL * X_N_GLOBAL);
-    K_host            = (__nv_bfloat16*)malloc(sizeof(__nv_bfloat16) * Wk_M_GLOBAL * X_N_GLOBAL);
-    K_host_cublas     = (__nv_bfloat16*)malloc(sizeof(__nv_bfloat16) * Wk_M_GLOBAL * X_N_GLOBAL);
-    V_host            = (__nv_bfloat16*)malloc(sizeof(__nv_bfloat16) * Wv_M_GLOBAL * X_N_GLOBAL);
-    V_host_cublas     = (__nv_bfloat16*)malloc(sizeof(__nv_bfloat16) * Wv_M_GLOBAL * X_N_GLOBAL);
-    O_host            = (__nv_bfloat16*)malloc(sizeof(__nv_bfloat16) * Wq_M_GLOBAL * X_N_GLOBAL);
-    O_host_baseline   = (__nv_bfloat16*)malloc(sizeof(__nv_bfloat16) * Wq_M_GLOBAL * X_N_GLOBAL);
+    Q_host             = (__nv_bfloat16*)malloc(sizeof(__nv_bfloat16) * Wq_M_GLOBAL * X_N_GLOBAL);
+    Q_host_cublas      = (__nv_bfloat16*)malloc(sizeof(__nv_bfloat16) * Wq_M_GLOBAL * X_N_GLOBAL);
+    K_host             = (__nv_bfloat16*)malloc(sizeof(__nv_bfloat16) * Wk_M_GLOBAL * X_N_GLOBAL);
+    K_host_cublas      = (__nv_bfloat16*)malloc(sizeof(__nv_bfloat16) * Wk_M_GLOBAL * X_N_GLOBAL);
+    V_host             = (__nv_bfloat16*)malloc(sizeof(__nv_bfloat16) * Wv_M_GLOBAL * X_N_GLOBAL);
+    V_host_cublas      = (__nv_bfloat16*)malloc(sizeof(__nv_bfloat16) * Wv_M_GLOBAL * X_N_GLOBAL);
+    O_host             = (__nv_bfloat16*)malloc(sizeof(__nv_bfloat16) * Wq_M_GLOBAL * X_N_GLOBAL);
+    O_host_baseline    = (__nv_bfloat16*)malloc(sizeof(__nv_bfloat16) * Wq_M_GLOBAL * X_N_GLOBAL);
 
-    Q_host_cpu            = (__nv_bfloat16*)malloc(sizeof(__nv_bfloat16) * Wq_M_GLOBAL * X_N_GLOBAL);
-    K_host_cpu            = (__nv_bfloat16*)malloc(sizeof(__nv_bfloat16) * Wk_M_GLOBAL * X_N_GLOBAL);
-    V_host_cpu            = (__nv_bfloat16*)malloc(sizeof(__nv_bfloat16) * Wv_M_GLOBAL * X_N_GLOBAL);
+    Q_host_cpu         = (__nv_bfloat16*)malloc(sizeof(__nv_bfloat16) * Wq_M_GLOBAL * X_N_GLOBAL);
+    K_host_cpu         = (__nv_bfloat16*)malloc(sizeof(__nv_bfloat16) * Wk_M_GLOBAL * X_N_GLOBAL);
+    V_host_cpu         = (__nv_bfloat16*)malloc(sizeof(__nv_bfloat16) * Wv_M_GLOBAL * X_N_GLOBAL);
 
     cudaMalloc(reinterpret_cast<void**>(&Wq_device), sizeof(__nv_bfloat16) * Wq_M_GLOBAL * Wq_N_GLOBAL);
     cudaMalloc(reinterpret_cast<void**>(&Wk_device), sizeof(__nv_bfloat16) * Wk_M_GLOBAL * Wk_N_GLOBAL);
@@ -219,6 +188,7 @@ int main()
     int Wq_max_high_freq_count = 0;
     int Wq_max_full_count = 0;
     uint8_t Wq_start_exp = 0;
+
     int Wq_num_global_tiles = InitBF16MatrixTripleBitmap_Host(
         Wq_host, Wq_M_GLOBAL, Wq_N_GLOBAL, 
         8, 16, 64, 8, 64, 64,
@@ -226,6 +196,7 @@ int main()
         &Wq_bitmap1_cpu, &Wq_bitmap2_cpu, &Wq_bitmap3_cpu,
         &Wq_TileOffsets_cpu, &Wq_TileOffsets_median_cpu, &Wq_TileOffsets_global_cpu,
         Wq_max_high_freq_count, Wq_max_full_count, Wq_start_exp);
+
     int Wq_tile_m = 8;
     int Wq_tile_k = 8;
     int Wq_tile_m_global = 64;
@@ -485,17 +456,19 @@ int main()
     }
 
     // zipserv
-    BF16TripleBitmap_MM_API(0,
-                            Wq_sign_mantissa_gpu,Wq_compressed_full_gpu,
-                            Wq_bitmap1_gpu,Wq_bitmap2_gpu,Wq_bitmap3_gpu,
-                            Wq_TileOffsets_median_gpu,Wq_TileOffsets_global_gpu,
-                            Wq_max_high_freq_count,Wq_max_full_count,
-                            Wq_start_exp,
-                            X_device,
-                            Q_device,
-                            Wq_M_GLOBAL, X_N_GLOBAL, Wq_N_GLOBAL,
-                            nullptr,
-                            1);
+    BF16TripleBitmap_MM_API(
+        0,
+        Wq_sign_mantissa_gpu,Wq_compressed_full_gpu,
+        Wq_bitmap1_gpu,Wq_bitmap2_gpu,Wq_bitmap3_gpu,
+        Wq_TileOffsets_median_gpu,Wq_TileOffsets_global_gpu,
+        Wq_max_high_freq_count,Wq_max_full_count,
+        Wq_start_exp,
+        X_device,
+        Q_device,
+        Wq_M_GLOBAL, X_N_GLOBAL, Wq_N_GLOBAL,
+        nullptr,
+        1);
+
     Q_host = (__nv_bfloat16*)malloc(sizeof(__nv_bfloat16) * Wq_M_GLOBAL * X_N_GLOBAL);
     cudaMemcpy(Q_host, Q_device, sizeof(__nv_bfloat16) * Wq_M_GLOBAL * X_N_GLOBAL, cudaMemcpyDeviceToHost); 
 
@@ -509,33 +482,35 @@ int main()
     const float      alpha     = 1.0;
     const float      beta      = 0.0;
     cublasGemmAlgo_t CuBlasALG_Q = static_cast<cublasGemmAlgo_t>(0);
-    cublasGemmEx(handle_Q,
-                    CUBLAS_OP_T,
-                    CUBLAS_OP_N,
-                    m,
-                    n,
-                    k,
-                    &alpha,
-                    Wq_device,
-                    CUDA_R_16BF,
-                    k,
-                    X_device,
-                    CUDA_R_16BF,
-                    k,
-                    &beta,
-                    Q_device_cublas,
-                    CUDA_R_16BF,
-                    m,
-                    CUDA_R_32F,
-                    CuBlasALG_Q);
+
+    cublasGemmEx(
+        handle_Q,
+        CUBLAS_OP_T,
+        CUBLAS_OP_N,
+        m,
+        n,
+        k,
+        &alpha,
+        Wq_device,
+        CUDA_R_16BF,
+        k,
+        X_device,
+        CUDA_R_16BF,
+        k,
+        &beta,
+        Q_device_cublas,
+        CUDA_R_16BF,
+        m,
+        CUDA_R_32F,
+        CuBlasALG_Q);
+
     Q_host_cublas = (__nv_bfloat16*)malloc(sizeof(__nv_bfloat16) * Wq_M_GLOBAL * X_N_GLOBAL);
     cudaMemcpy(Q_host_cublas, Q_device_cublas, sizeof(__nv_bfloat16) * Wq_M_GLOBAL * X_N_GLOBAL, cudaMemcpyDeviceToHost); 
     
     // compare results
     double max_abs_error_Q=ComputeTotalError_BF16(Q_host_cublas, Q_host, Wq_M_GLOBAL, X_N_GLOBAL);
     printf("Q Matrix - Max Absolute Error: %lf\n", max_abs_error_Q);
-    // print_row_activity("Q zipserv", Q_host, Wq_M_GLOBAL, X_N_GLOBAL);
-    // print_row_activity("Q cublas", Q_host_cublas, Wq_M_GLOBAL, X_N_GLOBAL);
+
     // K=Wk*X
     // cpu
     for(int i=0; i<Wk_M_GLOBAL;i++)
@@ -551,17 +526,19 @@ int main()
     }
 
     // zipserv
-    BF16TripleBitmap_MM_API(0,
-                            Wk_sign_mantissa_gpu,Wk_compressed_full_gpu,
-                            Wk_bitmap1_gpu,Wk_bitmap2_gpu,Wk_bitmap3_gpu,
-                            Wk_TileOffsets_median_gpu,Wk_TileOffsets_global_gpu,
-                            Wk_max_high_freq_count,Wk_max_full_count,
-                            Wk_start_exp,
-                            X_device,
-                            K_device,
-                            Wk_M_GLOBAL, X_N_GLOBAL, Wk_N_GLOBAL,
-                            nullptr,
-                            1);
+    BF16TripleBitmap_MM_API(
+        0,
+        Wk_sign_mantissa_gpu,Wk_compressed_full_gpu,
+        Wk_bitmap1_gpu,Wk_bitmap2_gpu,Wk_bitmap3_gpu,
+        Wk_TileOffsets_median_gpu,Wk_TileOffsets_global_gpu,
+        Wk_max_high_freq_count,Wk_max_full_count,
+        Wk_start_exp,
+        X_device,
+        K_device,
+        Wk_M_GLOBAL, X_N_GLOBAL, Wk_N_GLOBAL,
+        nullptr,
+        1);
+
     K_host = (__nv_bfloat16*)malloc(sizeof(__nv_bfloat16) * Wk_M_GLOBAL * X_N_GLOBAL);
     cudaMemcpy(K_host, K_device, sizeof(__nv_bfloat16) * Wk_M_GLOBAL * X_N_GLOBAL, cudaMemcpyDeviceToHost); 
 
@@ -575,25 +552,28 @@ int main()
     n = X_N_GLOBAL; 
     k = Wk_N_GLOBAL;
     cublasGemmAlgo_t CuBlasALG_K = static_cast<cublasGemmAlgo_t>(0);
-    cublasGemmEx(handle_K,
-                    CUBLAS_OP_T,
-                    CUBLAS_OP_N,
-                    m,
-                    n,
-                    k,
-                    &alpha,
-                    Wk_device,
-                    CUDA_R_16BF,
-                    k,
-                    X_device,
-                    CUDA_R_16BF,
-                    k,
-                    &beta,
-                    K_device_cublas,
-                    CUDA_R_16BF,
-                    m,
-                    CUDA_R_32F,
-                    CuBlasALG_K);
+
+    cublasGemmEx(
+        handle_K,
+        CUBLAS_OP_T,
+        CUBLAS_OP_N,
+        m,
+        n,
+        k,
+        &alpha,
+        Wk_device,
+        CUDA_R_16BF,
+        k,
+        X_device,
+        CUDA_R_16BF,
+        k,
+        &beta,
+        K_device_cublas,
+        CUDA_R_16BF,
+        m,
+        CUDA_R_32F,
+        CuBlasALG_K);
+
     K_host_cublas = (__nv_bfloat16*)malloc(sizeof(__nv_bfloat16) * Wk_M_GLOBAL * X_N_GLOBAL);
     cudaMemcpy(K_host_cublas, K_device_cublas, sizeof(__nv_bfloat16) * Wk_M_GLOBAL * X_N_GLOBAL, cudaMemcpyDeviceToHost); 
     
@@ -616,17 +596,19 @@ int main()
     }
 
     // zipserv
-    BF16TripleBitmap_MM_API(0,
-                            Wv_sign_mantissa_gpu,Wv_compressed_full_gpu,
-                            Wv_bitmap1_gpu,Wv_bitmap2_gpu,Wv_bitmap3_gpu,
-                            Wv_TileOffsets_median_gpu,Wv_TileOffsets_global_gpu,
-                            Wv_max_high_freq_count,Wv_max_full_count,
-                            Wv_start_exp,
-                            X_device,
-                            V_device,
-                            Wv_M_GLOBAL, X_N_GLOBAL, Wv_N_GLOBAL,
-                            nullptr,
-                            1);
+    BF16TripleBitmap_MM_API(
+        0,
+        Wv_sign_mantissa_gpu,Wv_compressed_full_gpu,
+        Wv_bitmap1_gpu,Wv_bitmap2_gpu,Wv_bitmap3_gpu,
+        Wv_TileOffsets_median_gpu,Wv_TileOffsets_global_gpu,
+        Wv_max_high_freq_count,Wv_max_full_count,
+        Wv_start_exp,
+        X_device,
+        V_device,
+        Wv_M_GLOBAL, X_N_GLOBAL, Wv_N_GLOBAL,
+        nullptr,
+        1);
+
     V_host = (__nv_bfloat16*)malloc(sizeof(__nv_bfloat16) * Wv_M_GLOBAL * X_N_GLOBAL);
     cudaMemcpy(V_host, V_device, sizeof(__nv_bfloat16) * Wv_M_GLOBAL * X_N_GLOBAL, cudaMemcpyDeviceToHost); 
 
@@ -640,25 +622,27 @@ int main()
     n = X_N_GLOBAL;
     k = Wv_N_GLOBAL;
     cublasGemmAlgo_t CuBlasALG_V = static_cast<cublasGemmAlgo_t>(0);
-    cublasGemmEx(handle_V,
-                    CUBLAS_OP_T,
-                    CUBLAS_OP_N,
-                    m,
-                    n,
-                    k,
-                    &alpha,
-                    Wv_device,
-                    CUDA_R_16BF,
-                    k,
-                    X_device,
-                    CUDA_R_16BF,
-                    k,
-                    &beta,
-                    V_device_cublas,
-                    CUDA_R_16BF,
-                    m,
-                    CUDA_R_32F,
-                    CuBlasALG_V);
+    cublasGemmEx(
+        handle_V,
+        CUBLAS_OP_T,
+        CUBLAS_OP_N,
+        m,
+        n,
+        k,
+        &alpha,
+        Wv_device,
+        CUDA_R_16BF,
+        k,
+        X_device,
+        CUDA_R_16BF,
+        k,
+        &beta,
+        V_device_cublas,
+        CUDA_R_16BF,
+        m,
+        CUDA_R_32F,
+        CuBlasALG_V);
+
     V_host_cublas = (__nv_bfloat16*)malloc(sizeof(__nv_bfloat16) * Wv_M_GLOBAL * X_N_GLOBAL);
     cudaMemcpy(V_host_cublas, V_device_cublas, sizeof(__nv_bfloat16) * Wv_M_GLOBAL * X_N_GLOBAL, cudaMemcpyDeviceToHost); 
     
@@ -670,7 +654,19 @@ int main()
 
     dim3 gridDim(Wq_M_GLOBAL/kBlockM, X_M_GLOBAL/HeadDim, 1);
     dim3 blockDim(32*4,1,1);
-    int shared_mem_size = (kBlockM * HeadDim * sizeof(__nv_bfloat16)) * 5; 
+    // int shared_mem_size = kBlockM * HeadDim * sizeof(__nv_bfloat16)*5;
+    int shared_mem_size = (kBlockM * HeadDim * sizeof(__nv_bfloat16));      // V
+    shared_mem_size += (kBlockM * HeadDim * sizeof(__nv_bfloat16)*2);       // prepare Q double buffer
+    shared_mem_size += (sizeof(uint64_t)*64*3*2);                                                                          // prepare Q 3 bitmaps double buffer
+    shared_mem_size += max(sizeof(__nv_bfloat16)*Wq_max_high_freq_count*2,
+                           sizeof(__nv_bfloat16)*Wk_max_high_freq_count*2); // prepare Q full value double buffer
+    shared_mem_size += max(sizeof(uint8_t)*Wq_max_full_count*2,
+                           sizeof(uint8_t)*Wk_max_full_count*2);            // prepare Q high-freq sign+mantissa double buffer
+    shared_mem_size += (kBlockM * HeadDim * sizeof(__nv_bfloat16));         // K
+    int shared_mem_maxsize = 0;        
+    CUDA_CHECK(cudaDeviceGetAttribute(&shared_mem_maxsize,cudaDevAttrMaxSharedMemoryPerBlock,0));
+    shared_mem_size = min(shared_mem_size, shared_mem_maxsize);
+    printf("%d KB shared memory per block\n", shared_mem_size / 1024);
     for (int i = 0; i < WARM_UP_ITERATION; i++) 
     {
         compute_attn_v2<<<gridDim, blockDim, shared_mem_size>>>(
@@ -726,38 +722,39 @@ int main()
 
     for (int i = 0; i < WARM_UP_ITERATION; i++) 
     {
-        compute_attn_v2_zipserv<<<gridDim, blockDim, shared_mem_size>>>(O_device, 
-                                                                        K_device, V_device, 
-                                                                        Wk_N_GLOBAL, Wv_N_GLOBAL,  X_N_GLOBAL,
-                                                                        X_N_GLOBAL, 
-                                                                        0.125f,
-                                                                        Wq_sign_mantissa_gpu,
-                                                                        Wq_compressed_full_gpu,
-                                                                        Wq_bitmap1_gpu,
-                                                                        Wq_bitmap2_gpu,
-                                                                        Wq_bitmap3_gpu,
-                                                                        Wq_TileOffsets_median_gpu,
-                                                                        Wq_TileOffsets_global_gpu,
-                                                                        Wq_max_high_freq_count,
-                                                                        Wq_max_full_count,
-                                                                        Wq_start_exp,
-                                                                        Wq_M_GLOBAL,
-                                                                        X_N_GLOBAL,
-                                                                        Wq_N_GLOBAL,
-                                                                        Wk_sign_mantissa_gpu,
-                                                                        Wk_compressed_full_gpu,
-                                                                        Wk_bitmap1_gpu,
-                                                                        Wk_bitmap2_gpu,
-                                                                        Wk_bitmap3_gpu,
-                                                                        Wk_TileOffsets_median_gpu,
-                                                                        Wk_TileOffsets_global_gpu,
-                                                                        Wk_max_high_freq_count,
-                                                                        Wk_max_full_count,
-                                                                        Wk_start_exp,
-                                                                        Wk_M_GLOBAL,
-                                                                        X_N_GLOBAL,
-                                                                        Wk_N_GLOBAL,                                                                
-                                                                        X_device);
+        compute_attn_v2_zipserv<<<gridDim, blockDim, shared_mem_size>>>(
+            O_device, 
+            K_device, V_device, 
+            Wk_N_GLOBAL, Wv_N_GLOBAL,  X_N_GLOBAL,
+            X_N_GLOBAL, 
+            0.125f,
+            Wq_sign_mantissa_gpu,
+            Wq_compressed_full_gpu,
+            Wq_bitmap1_gpu,
+            Wq_bitmap2_gpu,
+            Wq_bitmap3_gpu,
+            Wq_TileOffsets_median_gpu,
+            Wq_TileOffsets_global_gpu,
+            Wq_max_high_freq_count,
+            Wq_max_full_count,
+            Wq_start_exp,
+            Wq_M_GLOBAL,
+            X_N_GLOBAL,
+            Wq_N_GLOBAL,
+            Wk_sign_mantissa_gpu,
+            Wk_compressed_full_gpu,
+            Wk_bitmap1_gpu,
+            Wk_bitmap2_gpu,
+            Wk_bitmap3_gpu,
+            Wk_TileOffsets_median_gpu,
+            Wk_TileOffsets_global_gpu,
+            Wk_max_high_freq_count,
+            Wk_max_full_count,
+            Wk_start_exp,
+            Wk_M_GLOBAL,
+            X_N_GLOBAL,
+            Wk_N_GLOBAL,                                                                
+            X_device);
     }
     flush_l2_cache();
     
@@ -767,38 +764,39 @@ int main()
     {
         flush_l2_cache();
         cudaEventRecord(start);
-        compute_attn_v2_zipserv<<<gridDim, blockDim, shared_mem_size>>>(O_device, 
-                                                                        K_device, V_device, 
-                                                                        Wk_N_GLOBAL, Wv_N_GLOBAL,  X_N_GLOBAL,
-                                                                        X_N_GLOBAL, 
-                                                                        0.125f,
-                                                                        Wq_sign_mantissa_gpu,
-                                                                        Wq_compressed_full_gpu,
-                                                                        Wq_bitmap1_gpu,
-                                                                        Wq_bitmap2_gpu,
-                                                                        Wq_bitmap3_gpu,
-                                                                        Wq_TileOffsets_median_gpu,
-                                                                        Wq_TileOffsets_global_gpu,
-                                                                        Wq_max_high_freq_count,
-                                                                        Wq_max_full_count,
-                                                                        Wq_start_exp,
-                                                                        Wq_M_GLOBAL,
-                                                                        X_N_GLOBAL,
-                                                                        Wq_N_GLOBAL,
-                                                                        Wk_sign_mantissa_gpu,
-                                                                        Wk_compressed_full_gpu,
-                                                                        Wk_bitmap1_gpu,
-                                                                        Wk_bitmap2_gpu,
-                                                                        Wk_bitmap3_gpu,
-                                                                        Wk_TileOffsets_median_gpu,
-                                                                        Wk_TileOffsets_global_gpu,
-                                                                        Wk_max_high_freq_count,
-                                                                        Wk_max_full_count,
-                                                                        Wk_start_exp,
-                                                                        Wk_M_GLOBAL,
-                                                                        X_N_GLOBAL,
-                                                                        Wk_N_GLOBAL,                                                                
-                                                                        X_device);
+        compute_attn_v2_zipserv<<<gridDim, blockDim, shared_mem_size>>>(
+            O_device, 
+            K_device, V_device, 
+            Wk_N_GLOBAL, Wv_N_GLOBAL,  X_N_GLOBAL,
+            X_N_GLOBAL, 
+            0.125f,
+            Wq_sign_mantissa_gpu,
+            Wq_compressed_full_gpu,
+            Wq_bitmap1_gpu,
+            Wq_bitmap2_gpu,
+            Wq_bitmap3_gpu,
+            Wq_TileOffsets_median_gpu,
+            Wq_TileOffsets_global_gpu,
+            Wq_max_high_freq_count,
+            Wq_max_full_count,
+            Wq_start_exp,
+            Wq_M_GLOBAL,
+            X_N_GLOBAL,
+            Wq_N_GLOBAL,
+            Wk_sign_mantissa_gpu,
+            Wk_compressed_full_gpu,
+            Wk_bitmap1_gpu,
+            Wk_bitmap2_gpu,
+            Wk_bitmap3_gpu,
+            Wk_TileOffsets_median_gpu,
+            Wk_TileOffsets_global_gpu,
+            Wk_max_high_freq_count,
+            Wk_max_full_count,
+            Wk_start_exp,
+            Wk_M_GLOBAL,
+            X_N_GLOBAL,
+            Wk_N_GLOBAL,                                                                
+            X_device);
         cudaEventRecord(stop);
         cudaEventSynchronize(stop);
         float iter_time = 0.0f;
