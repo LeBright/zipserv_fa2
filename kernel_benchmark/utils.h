@@ -29,8 +29,8 @@
 #include <cuda_bf16.h>
 #include <cuda_runtime.h>
 // Performance Benchmark
-#define WARM_UP_ITERATION 0
-#define BENCHMARK_ITERATION 1
+#define WARM_UP_ITERATION 1000
+#define BENCHMARK_ITERATION 2000
 
 
 void SavePerformanceData(const char* filename, 
@@ -98,9 +98,17 @@ void PrintPerformance(const char* KernelName, float milliseconds, float tflops, 
            error);
 }
 
+inline unsigned get_auto_seed() {
+    static unsigned counter = 0;
+    unsigned t = static_cast<unsigned>(
+        std::chrono::high_resolution_clock::now().time_since_epoch().count());
+    std::random_device rd;
+    return t ^ rd() ^ (0x9e3779b9u + (++counter << 6) + (counter >> 2));
+}
+
 
 void init_host_matrices_bf16(__nv_bfloat16* A_h, __nv_bfloat16* B_h, int M, int K, int N,
-                           const int* custom_exponents = nullptr, unsigned seed = 12345) {
+                           const int* custom_exponents = nullptr, unsigned seed = 0) {
     // Default high-frequency exponent values
     // int default_exponents[7] = {123, 124, 125, 126, 127, 128, 129};
     // int default_exponents[7] = {123, 124, 125, 126, 127, 128, 130};
@@ -116,7 +124,12 @@ void init_host_matrices_bf16(__nv_bfloat16* A_h, __nv_bfloat16* B_h, int M, int 
     double weights[7] = {8.0, 7.0, 5.0, 4.0, 3.0, 2.0, 1.0};
     double total_weight = 30.0;  // 7+6+5+4+3+2+1
     
-    // Initialize random number generator with fixed seed for reproducibility
+    // If seed is not provided, auto-generate one so each call yields different matrices.
+    if (seed == 0) {
+        seed = get_auto_seed();
+    }
+
+    // Initialize random number generator
     std::mt19937 gen(seed);
     std::uniform_real_distribution<float> dist_mantissa(0.0f, 1.0f);
     std::uniform_int_distribution<int> dist_sign(0, 1);
@@ -171,7 +184,7 @@ void init_host_matrices_bf16(__nv_bfloat16* A_h, __nv_bfloat16* B_h, int M, int 
     }
 }
 void init_host_matrices_bf16_one(__nv_bfloat16* A_h, int M, int K, 
-                           const int* custom_exponents = nullptr, unsigned seed = 12345) {
+                           const int* custom_exponents = nullptr, unsigned seed = 0) {
     // Default high-frequency exponent values
     // int default_exponents[7] = {123, 124, 125, 126, 127, 128, 129};
     // int default_exponents[7] = {123, 124, 125, 126, 127, 128, 130};
@@ -187,7 +200,12 @@ void init_host_matrices_bf16_one(__nv_bfloat16* A_h, int M, int K,
     double weights[7] = {8.0, 7.0, 5.0, 4.0, 3.0, 2.0, 1.0};
     double total_weight = 30.0;  // 7+6+5+4+3+2+1
     
-    // Initialize random number generator with fixed seed for reproducibility
+    // If seed is not provided, auto-generate one so each call yields different matrices.
+    if (seed == 0) {
+        seed = get_auto_seed();
+    }
+
+    // Initialize random number generator
     std::mt19937 gen(seed);
     std::uniform_real_distribution<float> dist_mantissa(0.0f, 1.0f);
     std::uniform_int_distribution<int> dist_sign(0, 1);

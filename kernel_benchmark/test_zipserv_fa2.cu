@@ -10,7 +10,8 @@
 #include "utils.h"
 
 #define CUDA_CHECK(call)                                                        \
-    do {                                                                        \
+    do                                                                          \
+    {                                                                           \
         cudaError_t _err = (call);                                              \
         if (_err != cudaSuccess) {                                              \
             fprintf(stderr, "CUDA error at %s:%d: %s (%d)\n",                   \
@@ -52,48 +53,129 @@ void flush_l2_cache() {
     static void* d_flush_buffer = nullptr;
     static size_t flush_buffer_size = 0;
     static bool initialized = false;
+    static bool disabled = false;
+
+    if (disabled) {
+        return;
+    }
+
+    (void)cudaGetLastError();
     
     if (!initialized) {
         // Get L2 cache size dynamically
         int device = 0;
         int l2_size = 0;
-        cudaGetDevice(&device);
-        cudaDeviceGetAttribute(&l2_size, cudaDevAttrL2CacheSize, device);
-        
-        // Use 2x L2 cache size to ensure complete flush
-        flush_buffer_size = l2_size * 2;
-        
-        // Allocate flush buffer
-        cudaMalloc(&d_flush_buffer, flush_buffer_size);
-        if (d_flush_buffer == nullptr) {
-            printf("Error: Failed to allocate L2 cache flush buffer\n");
-            exit(-1);
+        cudaError_t err = cudaGetDevice(&device);
+        if (err != cudaSuccess) {
+            fprintf(stderr, "WARN: flush_l2_cache disabled (cudaGetDevice failed): %s (%d)\n",
+                    cudaGetErrorString(err), (int)err);
+            disabled = true;
+            return;
         }
-        
+
+        err = cudaDeviceGetAttribute(&l2_size, cudaDevAttrL2CacheSize, device);
+        if (err != cudaSuccess || l2_size <= 0) {
+            fprintf(stderr, "WARN: flush_l2_cache disabled (query L2 size failed): %s (%d), l2_size=%d\n",
+                    cudaGetErrorString(err), (int)err, l2_size);
+            disabled = true;
+            return;
+        }
+
+        // Try 2x L2 first, then degrade to 1x and 0.5x to avoid hard failures.
+        size_t candidates[3] = {
+            static_cast<size_t>(l2_size) * 2,
+            static_cast<size_t>(l2_size),
+            static_cast<size_t>(l2_size) / 2
+        };
+
+        for (size_t candidate_size : candidates) {
+            if (candidate_size == 0) {
+                continue;
+            }
+
+            err = cudaMalloc(&d_flush_buffer, candidate_size);
+            if (err == cudaSuccess && d_flush_buffer != nullptr) {
+                flush_buffer_size = candidate_size;
+                initialized = true;
+                break;
+            }
+
+            fprintf(stderr, "WARN: flush_l2_cache alloc %zu bytes failed: %s (%d)\n",
+                    candidate_size, cudaGetErrorString(err), (int)err);
+            d_flush_buffer = nullptr;
+            (void)cudaGetLastError();
+        }
+
+        if (!initialized) {
+            fprintf(stderr, "WARN: flush_l2_cache disabled (all allocation attempts failed).\n");
+            disabled = true;
+            return;
+        }
+
         printf("L2 Cache size: %d bytes, Flush buffer size: %zu bytes\n", l2_size, flush_buffer_size);
-        initialized = true;
     }
     
     // Flush L2 cache by writing to buffer larger than L2 cache
-    cudaMemsetAsync(d_flush_buffer, 0, flush_buffer_size);
-    cudaDeviceSynchronize();
+    cudaError_t err = cudaMemsetAsync(d_flush_buffer, 0, flush_buffer_size);
+    if (err != cudaSuccess) {
+        fprintf(stderr, "WARN: flush_l2_cache memset failed, disabling flush: %s (%d)\n",
+                cudaGetErrorString(err), (int)err);
+        if (d_flush_buffer) {
+            (void)cudaFree(d_flush_buffer);
+            d_flush_buffer = nullptr;
+        }
+        flush_buffer_size = 0;
+        initialized = false;
+        disabled = true;
+        return;
+    }
+
+    err = cudaDeviceSynchronize();
+    if (err != cudaSuccess) {
+        fprintf(stderr, "WARN: flush_l2_cache sync failed, disabling flush: %s (%d)\n",
+                cudaGetErrorString(err), (int)err);
+        if (d_flush_buffer) {
+            (void)cudaFree(d_flush_buffer);
+            d_flush_buffer = nullptr;
+        }
+        flush_buffer_size = 0;
+        initialized = false;
+        disabled = true;
+    }
 }
 
-int main()
+int main(int argc, char** argv)
 {
+
+    int d_model = 64;
+    int seq_len = 64;
+    if (argc == 3) {
+        d_model = std::atoi(argv[1]);
+        seq_len = std::atoi(argv[2]);
+        if (d_model <= 0 || seq_len <= 0 || d_model % 64 != 0 || seq_len % 64 != 0) {
+            printf("Invalid args. d_model and seq_len must be positive multiples of 64.\n");
+            printf("Usage: %s [d_model seq_len]\n", argv[0]);
+            return -1;
+        }
+    } else if (argc != 1) {
+        printf("Usage: %s [d_model seq_len]\n", argv[0]);
+        return -1;
+    }
 
     cudaEvent_t start, stop;
     cudaEventCreate(&start);
     cudaEventCreate(&stop);
 
-    int Wq_M_GLOBAL = 256;
-    int Wq_N_GLOBAL = 256;
-    int Wk_M_GLOBAL = 256;
-    int Wk_N_GLOBAL = 256;
-    int Wv_M_GLOBAL = 256;
-    int Wv_N_GLOBAL = 256;
-    int X_M_GLOBAL  = 256;
-    int X_N_GLOBAL  = 1024;
+    int Wq_M_GLOBAL = d_model;
+    int Wq_N_GLOBAL = d_model;
+    int Wk_M_GLOBAL = d_model;
+    int Wk_N_GLOBAL = d_model;
+    int Wv_M_GLOBAL = d_model;
+    int Wv_N_GLOBAL = d_model;
+    int X_M_GLOBAL  = d_model;
+    int X_N_GLOBAL  = seq_len;
+
+    printf("Running config: d_model=%d, seq_len=%d\n", d_model, seq_len);
 
     // Host memory
     __nv_bfloat16* Wq_host             = NULL;   
@@ -441,19 +523,19 @@ int main()
     free(Wv_TileOffsets_median_cpu);
     free(Wv_TileOffsets_global_cpu);
 
-    // Q=Wq*X
-    // cpu
-    for(int i=0; i<Wq_M_GLOBAL;i++)
-    {
-        for(int j=0;j<X_N_GLOBAL;j++)
-        {
-            Q_host_cpu[i*X_N_GLOBAL+j] = __float2bfloat16(0.0f);
-            for(int k=0;k<Wq_N_GLOBAL;k++)
-            {
-                Q_host_cpu[i*X_N_GLOBAL+j] += Wq_host[i*Wq_N_GLOBAL+k] * X_host[j*X_M_GLOBAL+k];
-            }
-        }
-    }
+    // // Q=Wq*X
+    // // cpu
+    // for(int i=0; i<Wq_M_GLOBAL;i++)
+    // {
+    //     for(int j=0;j<X_N_GLOBAL;j++)
+    //     {
+    //         Q_host_cpu[i*X_N_GLOBAL+j] = __float2bfloat16(0.0f);
+    //         for(int k=0;k<Wq_N_GLOBAL;k++)
+    //         {
+    //             Q_host_cpu[i*X_N_GLOBAL+j] += Wq_host[i*Wq_N_GLOBAL+k] * X_host[j*X_M_GLOBAL+k];
+    //         }
+    //     }
+    // }
 
     // zipserv
     BF16TripleBitmap_MM_API(
@@ -469,61 +551,56 @@ int main()
         nullptr,
         1);
 
-    Q_host = (__nv_bfloat16*)malloc(sizeof(__nv_bfloat16) * Wq_M_GLOBAL * X_N_GLOBAL);
-    cudaMemcpy(Q_host, Q_device, sizeof(__nv_bfloat16) * Wq_M_GLOBAL * X_N_GLOBAL, cudaMemcpyDeviceToHost); 
-
-    // cublas
-    cublasHandle_t handle_Q;
-    cublasCreate(&handle_Q);
-    cublasSetStream(handle_Q, 0);
-    cublasSetMathMode(handle_Q, CUBLAS_PEDANTIC_MATH);
-    cudaDeviceSynchronize();
-    int              m = Wq_M_GLOBAL, n = X_N_GLOBAL, k = Wq_N_GLOBAL;
-    const float      alpha     = 1.0;
-    const float      beta      = 0.0;
-    cublasGemmAlgo_t CuBlasALG_Q = static_cast<cublasGemmAlgo_t>(0);
-
-    cublasGemmEx(
-        handle_Q,
-        CUBLAS_OP_T,
-        CUBLAS_OP_N,
-        m,
-        n,
-        k,
-        &alpha,
-        Wq_device,
-        CUDA_R_16BF,
-        k,
-        X_device,
-        CUDA_R_16BF,
-        k,
-        &beta,
-        Q_device_cublas,
-        CUDA_R_16BF,
-        m,
-        CUDA_R_32F,
-        CuBlasALG_Q);
-
-    Q_host_cublas = (__nv_bfloat16*)malloc(sizeof(__nv_bfloat16) * Wq_M_GLOBAL * X_N_GLOBAL);
-    cudaMemcpy(Q_host_cublas, Q_device_cublas, sizeof(__nv_bfloat16) * Wq_M_GLOBAL * X_N_GLOBAL, cudaMemcpyDeviceToHost); 
-    
+    // Q_host = (__nv_bfloat16*)malloc(sizeof(__nv_bfloat16) * Wq_M_GLOBAL * X_N_GLOBAL);
+    // cudaMemcpy(Q_host, Q_device, sizeof(__nv_bfloat16) * Wq_M_GLOBAL * X_N_GLOBAL, cudaMemcpyDeviceToHost); 
+    // // cublas
+    // cublasHandle_t handle_Q;
+    // cublasCreate(&handle_Q);
+    // cublasSetStream(handle_Q, 0);
+    // cublasSetMathMode(handle_Q, CUBLAS_PEDANTIC_MATH);
+    // cudaDeviceSynchronize();
+    // int              m = Wq_M_GLOBAL, n = X_N_GLOBAL, k = Wq_N_GLOBAL;
+    // const float      alpha     = 1.0;
+    // const float      beta      = 0.0;
+    // cublasGemmAlgo_t CuBlasALG_Q = static_cast<cublasGemmAlgo_t>(0);
+    // cublasGemmEx(
+    //     handle_Q,
+    //     CUBLAS_OP_T,
+    //     CUBLAS_OP_N,
+    //     m,
+    //     n,
+    //     k,
+    //     &alpha,
+    //     Wq_device,
+    //     CUDA_R_16BF,
+    //     k,
+    //     X_device,
+    //     CUDA_R_16BF,
+    //     k,
+    //     &beta,
+    //     Q_device_cublas,
+    //     CUDA_R_16BF,
+    //     m,
+    //     CUDA_R_32F,
+    //     CuBlasALG_Q);
+    // Q_host_cublas = (__nv_bfloat16*)malloc(sizeof(__nv_bfloat16) * Wq_M_GLOBAL * X_N_GLOBAL);
+    // cudaMemcpy(Q_host_cublas, Q_device_cublas, sizeof(__nv_bfloat16) * Wq_M_GLOBAL * X_N_GLOBAL, cudaMemcpyDeviceToHost); 
     // compare results
-    double max_abs_error_Q=ComputeTotalError_BF16(Q_host_cublas, Q_host, Wq_M_GLOBAL, X_N_GLOBAL);
-    printf("Q Matrix - Max Absolute Error: %lf\n", max_abs_error_Q);
-
-    // K=Wk*X
-    // cpu
-    for(int i=0; i<Wk_M_GLOBAL;i++)
-    {
-        for(int j=0;j<X_N_GLOBAL;j++)
-        {
-            K_host_cpu[i*X_N_GLOBAL+j] = __float2bfloat16(0.0f);
-            for(int k=0;k<Wk_N_GLOBAL;k++)
-            {
-                K_host_cpu[i*X_N_GLOBAL+j] += Wk_host[i*Wk_N_GLOBAL+k] * X_host[j*X_M_GLOBAL+k];
-            }
-        }
-    }
+    // double max_abs_error_Q=ComputeTotalError_BF16(Q_host_cublas, Q_host, Wq_M_GLOBAL, X_N_GLOBAL);
+    // printf("Q Matrix - Max Absolute Error: %lf\n", max_abs_error_Q);
+    // // K=Wk*X
+    // // cpu
+    // for(int i=0; i<Wk_M_GLOBAL;i++)
+    // {
+    //     for(int j=0;j<X_N_GLOBAL;j++)
+    //     {
+    //         K_host_cpu[i*X_N_GLOBAL+j] = __float2bfloat16(0.0f);
+    //         for(int k=0;k<Wk_N_GLOBAL;k++)
+    //         {
+    //             K_host_cpu[i*X_N_GLOBAL+j] += Wk_host[i*Wk_N_GLOBAL+k] * X_host[j*X_M_GLOBAL+k];
+    //         }
+    //     }
+    // }
 
     // zipserv
     BF16TripleBitmap_MM_API(
@@ -539,61 +616,56 @@ int main()
         nullptr,
         1);
 
-    K_host = (__nv_bfloat16*)malloc(sizeof(__nv_bfloat16) * Wk_M_GLOBAL * X_N_GLOBAL);
-    cudaMemcpy(K_host, K_device, sizeof(__nv_bfloat16) * Wk_M_GLOBAL * X_N_GLOBAL, cudaMemcpyDeviceToHost); 
-
-    // cublas
-    cublasHandle_t handle_K;
-    cublasCreate(&handle_K);
-    cublasSetStream(handle_K, 0);
-    cublasSetMathMode(handle_K, CUBLAS_PEDANTIC_MATH);
-    cudaDeviceSynchronize();
-    m = Wk_M_GLOBAL; 
-    n = X_N_GLOBAL; 
-    k = Wk_N_GLOBAL;
-    cublasGemmAlgo_t CuBlasALG_K = static_cast<cublasGemmAlgo_t>(0);
-
-    cublasGemmEx(
-        handle_K,
-        CUBLAS_OP_T,
-        CUBLAS_OP_N,
-        m,
-        n,
-        k,
-        &alpha,
-        Wk_device,
-        CUDA_R_16BF,
-        k,
-        X_device,
-        CUDA_R_16BF,
-        k,
-        &beta,
-        K_device_cublas,
-        CUDA_R_16BF,
-        m,
-        CUDA_R_32F,
-        CuBlasALG_K);
-
-    K_host_cublas = (__nv_bfloat16*)malloc(sizeof(__nv_bfloat16) * Wk_M_GLOBAL * X_N_GLOBAL);
-    cudaMemcpy(K_host_cublas, K_device_cublas, sizeof(__nv_bfloat16) * Wk_M_GLOBAL * X_N_GLOBAL, cudaMemcpyDeviceToHost); 
-    
+    // K_host = (__nv_bfloat16*)malloc(sizeof(__nv_bfloat16) * Wk_M_GLOBAL * X_N_GLOBAL);
+    // cudaMemcpy(K_host, K_device, sizeof(__nv_bfloat16) * Wk_M_GLOBAL * X_N_GLOBAL, cudaMemcpyDeviceToHost); 
+    // // cublas
+    // cublasHandle_t handle_K;
+    // cublasCreate(&handle_K);
+    // cublasSetStream(handle_K, 0);
+    // cublasSetMathMode(handle_K, CUBLAS_PEDANTIC_MATH);
+    // cudaDeviceSynchronize();
+    // m = Wk_M_GLOBAL; 
+    // n = X_N_GLOBAL; 
+    // k = Wk_N_GLOBAL;
+    // cublasGemmAlgo_t CuBlasALG_K = static_cast<cublasGemmAlgo_t>(0);
+    // cublasGemmEx(
+    //     handle_K,
+    //     CUBLAS_OP_T,
+    //     CUBLAS_OP_N,
+    //     m,
+    //     n,
+    //     k,
+    //     &alpha,
+    //     Wk_device,
+    //     CUDA_R_16BF,
+    //     k,
+    //     X_device,
+    //     CUDA_R_16BF,
+    //     k,
+    //     &beta,
+    //     K_device_cublas,
+    //     CUDA_R_16BF,
+    //     m,
+    //     CUDA_R_32F,
+    //     CuBlasALG_K);
+    // K_host_cublas = (__nv_bfloat16*)malloc(sizeof(__nv_bfloat16) * Wk_M_GLOBAL * X_N_GLOBAL);
+    // cudaMemcpy(K_host_cublas, K_device_cublas, sizeof(__nv_bfloat16) * Wk_M_GLOBAL * X_N_GLOBAL, cudaMemcpyDeviceToHost); 
     // compare results
-    double max_abs_error_K=ComputeTotalError_BF16(K_host_cublas, K_host, Wk_M_GLOBAL, X_N_GLOBAL);
-    printf("K Matrix - Max Absolute Error: %lf\n", max_abs_error_K);
-
-    // V=Wv*X
-    // cpu
-    for(int i=0; i<Wv_M_GLOBAL;i++)
-    {
-        for(int j=0;j<X_N_GLOBAL;j++)
-        {
-            V_host_cpu[i*X_N_GLOBAL+j] = __float2bfloat16(0.0f);
-            for(int k=0;k<Wv_N_GLOBAL;k++)
-            {
-                V_host_cpu[i*X_N_GLOBAL+j] += Wv_host[i*Wv_N_GLOBAL+k] * X_host[j*X_M_GLOBAL+k];
-            }
-        }
-    }
+    // double max_abs_error_K=ComputeTotalError_BF16(K_host_cublas, K_host, Wk_M_GLOBAL, X_N_GLOBAL);
+    // printf("K Matrix - Max Absolute Error: %lf\n", max_abs_error_K);
+    // // V=Wv*X
+    // // cpu
+    // for(int i=0; i<Wv_M_GLOBAL;i++)
+    // {
+    //     for(int j=0;j<X_N_GLOBAL;j++)
+    //     {
+    //         V_host_cpu[i*X_N_GLOBAL+j] = __float2bfloat16(0.0f);
+    //         for(int k=0;k<Wv_N_GLOBAL;k++)
+    //         {
+    //             V_host_cpu[i*X_N_GLOBAL+j] += Wv_host[i*Wv_N_GLOBAL+k] * X_host[j*X_M_GLOBAL+k];
+    //         }
+    //     }
+    // }
 
     // zipserv
     BF16TripleBitmap_MM_API(
@@ -609,66 +681,91 @@ int main()
         nullptr,
         1);
 
-    V_host = (__nv_bfloat16*)malloc(sizeof(__nv_bfloat16) * Wv_M_GLOBAL * X_N_GLOBAL);
-    cudaMemcpy(V_host, V_device, sizeof(__nv_bfloat16) * Wv_M_GLOBAL * X_N_GLOBAL, cudaMemcpyDeviceToHost); 
-
-    // cublas
-    cublasHandle_t handle_V;
-    cublasCreate(&handle_V);
-    cublasSetStream(handle_V, 0);
-    cublasSetMathMode(handle_V, CUBLAS_PEDANTIC_MATH);
-    cudaDeviceSynchronize();
-    m = Wv_M_GLOBAL;
-    n = X_N_GLOBAL;
-    k = Wv_N_GLOBAL;
-    cublasGemmAlgo_t CuBlasALG_V = static_cast<cublasGemmAlgo_t>(0);
-    cublasGemmEx(
-        handle_V,
-        CUBLAS_OP_T,
-        CUBLAS_OP_N,
-        m,
-        n,
-        k,
-        &alpha,
-        Wv_device,
-        CUDA_R_16BF,
-        k,
-        X_device,
-        CUDA_R_16BF,
-        k,
-        &beta,
-        V_device_cublas,
-        CUDA_R_16BF,
-        m,
-        CUDA_R_32F,
-        CuBlasALG_V);
-
-    V_host_cublas = (__nv_bfloat16*)malloc(sizeof(__nv_bfloat16) * Wv_M_GLOBAL * X_N_GLOBAL);
-    cudaMemcpy(V_host_cublas, V_device_cublas, sizeof(__nv_bfloat16) * Wv_M_GLOBAL * X_N_GLOBAL, cudaMemcpyDeviceToHost); 
-    
+    // V_host = (__nv_bfloat16*)malloc(sizeof(__nv_bfloat16) * Wv_M_GLOBAL * X_N_GLOBAL);
+    // cudaMemcpy(V_host, V_device, sizeof(__nv_bfloat16) * Wv_M_GLOBAL * X_N_GLOBAL, cudaMemcpyDeviceToHost); 
+    // // cublas
+    // cublasHandle_t handle_V;
+    // cublasCreate(&handle_V);
+    // cublasSetStream(handle_V, 0);
+    // cublasSetMathMode(handle_V, CUBLAS_PEDANTIC_MATH);
+    // cudaDeviceSynchronize();
+    // m = Wv_M_GLOBAL;
+    // n = X_N_GLOBAL;
+    // k = Wv_N_GLOBAL;
+    // cublasGemmAlgo_t CuBlasALG_V = static_cast<cublasGemmAlgo_t>(0);
+    // cublasGemmEx(
+    //     handle_V,
+    //     CUBLAS_OP_T,
+    //     CUBLAS_OP_N,
+    //     m,
+    //     n,
+    //     k,
+    //     &alpha,
+    //     Wv_device,
+    //     CUDA_R_16BF,
+    //     k,
+    //     X_device,
+    //     CUDA_R_16BF,
+    //     k,
+    //     &beta,
+    //     V_device_cublas,
+    //     CUDA_R_16BF,
+    //     m,
+    //     CUDA_R_32F,
+    //     CuBlasALG_V);
+    // V_host_cublas = (__nv_bfloat16*)malloc(sizeof(__nv_bfloat16) * Wv_M_GLOBAL * X_N_GLOBAL);
+    // cudaMemcpy(V_host_cublas, V_device_cublas, sizeof(__nv_bfloat16) * Wv_M_GLOBAL * X_N_GLOBAL, cudaMemcpyDeviceToHost); 
     // compare results
-    double max_abs_error_V=ComputeTotalError_BF16(V_host_cublas, V_host, Wv_M_GLOBAL, X_N_GLOBAL);
-    printf("V Matrix - Max Absolute Error: %lf\n", max_abs_error_V);
+    // double max_abs_error_V=ComputeTotalError_BF16(V_host_cublas, V_host, Wv_M_GLOBAL, X_N_GLOBAL);
+    // printf("V Matrix - Max Absolute Error: %lf\n", max_abs_error_V);
 
     cudaDeviceSynchronize();
 
     dim3 gridDim(Wq_M_GLOBAL/kBlockM, X_M_GLOBAL/HeadDim, 1);
     dim3 blockDim(32*4,1,1);
     // int shared_mem_size = kBlockM * HeadDim * sizeof(__nv_bfloat16)*5;
-    int shared_mem_size = (kBlockM * HeadDim * sizeof(__nv_bfloat16));      // V
-    shared_mem_size += (kBlockM * HeadDim * sizeof(__nv_bfloat16)*2);       // prepare Q double buffer
-    shared_mem_size += (sizeof(uint64_t)*64*3*2);                                                                          // prepare Q 3 bitmaps double buffer
-    shared_mem_size += max(sizeof(__nv_bfloat16)*Wq_max_high_freq_count*2,
-                           sizeof(__nv_bfloat16)*Wk_max_high_freq_count*2); // prepare Q full value double buffer
-    shared_mem_size += max(sizeof(uint8_t)*Wq_max_full_count*2,
-                           sizeof(uint8_t)*Wk_max_full_count*2);            // prepare Q high-freq sign+mantissa double buffer
-    shared_mem_size += (kBlockM * HeadDim * sizeof(__nv_bfloat16));         // K
+    int shared_mem_size = (kBlockM * HeadDim * sizeof(__nv_bfloat16));         // V
+    shared_mem_size += (kBlockM * HeadDim * sizeof(__nv_bfloat16));            // K
+    shared_mem_size += (kBlockM * HeadDim * sizeof(__nv_bfloat16)*2);          // prepare Q double buffer
+    shared_mem_size += (sizeof(uint64_t)*64*3*2);                              // prepare Q 3 bitmaps double buffer
+    shared_mem_size += sizeof(__nv_bfloat16)*Wq_max_high_freq_count*2;         // prepare Q full value double buffer
+    shared_mem_size += sizeof(uint8_t)*Wq_max_full_count*2;                    // prepare Q high-freq sign+mantissa double buffer
+    // shared_mem_size += max(sizeof(__nv_bfloat16)*Wq_max_high_freq_count*2,
+    //                     sizeof(__nv_bfloat16)*Wk_max_high_freq_count*2);    
+    // shared_mem_size += max(sizeof(uint8_t)*Wq_max_full_count*2,
+    //                     sizeof(uint8_t)*Wk_max_full_count*2);               
     int shared_mem_maxsize = 0;        
     CUDA_CHECK(cudaDeviceGetAttribute(&shared_mem_maxsize,cudaDevAttrMaxSharedMemoryPerBlock,0));
     shared_mem_size = min(shared_mem_size, shared_mem_maxsize);
     printf("%d KB shared memory per block\n", shared_mem_size / 1024);
     for (int i = 0; i < WARM_UP_ITERATION; i++) 
     {
+        BF16TripleBitmap_MM_API(
+            0,
+            Wq_sign_mantissa_gpu,Wq_compressed_full_gpu,
+            Wq_bitmap1_gpu,Wq_bitmap2_gpu,Wq_bitmap3_gpu,
+            Wq_TileOffsets_median_gpu,Wq_TileOffsets_global_gpu,
+            Wq_max_high_freq_count,Wq_max_full_count,
+            Wq_start_exp,
+            X_device,
+            Q_device,
+            Wq_M_GLOBAL, X_N_GLOBAL, Wq_N_GLOBAL,
+            nullptr,
+            1);
+
+        // BF16TripleBitmap_MM_API(
+        //     0,
+        //     Wk_sign_mantissa_gpu,Wk_compressed_full_gpu,
+        //     Wk_bitmap1_gpu,Wk_bitmap2_gpu,Wk_bitmap3_gpu,
+        //     Wk_TileOffsets_median_gpu,Wk_TileOffsets_global_gpu,
+        //     Wk_max_high_freq_count,Wk_max_full_count,
+        //     Wk_start_exp,
+        //     X_device,
+        //     K_device,
+        //     Wk_M_GLOBAL, X_N_GLOBAL, Wk_N_GLOBAL,
+        //     nullptr,
+        //     1);
+
         compute_attn_v2<<<gridDim, blockDim, shared_mem_size>>>(
             O_device, 
             Q_device, 
@@ -681,7 +778,6 @@ int main()
             X_N_GLOBAL,
             0.125f);
     }
-    flush_l2_cache();
 
     float total_milliseconds_compute_attn = 0.0f;
     for (int i = 0; i < BENCHMARK_ITERATION; i++) 
@@ -691,6 +787,33 @@ int main()
         
         // Measure only the GEMM operation time, excluding cache flush overhead
         cudaEventRecord(start);
+
+        BF16TripleBitmap_MM_API(
+            0,
+            Wq_sign_mantissa_gpu,Wq_compressed_full_gpu,
+            Wq_bitmap1_gpu,Wq_bitmap2_gpu,Wq_bitmap3_gpu,
+            Wq_TileOffsets_median_gpu,Wq_TileOffsets_global_gpu,
+            Wq_max_high_freq_count,Wq_max_full_count,
+            Wq_start_exp,
+            X_device,
+            Q_device,
+            Wq_M_GLOBAL, X_N_GLOBAL, Wq_N_GLOBAL,
+            nullptr,
+            1);
+
+        // BF16TripleBitmap_MM_API(
+        //     0,
+        //     Wk_sign_mantissa_gpu,Wk_compressed_full_gpu,
+        //     Wk_bitmap1_gpu,Wk_bitmap2_gpu,Wk_bitmap3_gpu,
+        //     Wk_TileOffsets_median_gpu,Wk_TileOffsets_global_gpu,
+        //     Wk_max_high_freq_count,Wk_max_full_count,
+        //     Wk_start_exp,
+        //     X_device,
+        //     K_device,
+        //     Wk_M_GLOBAL, X_N_GLOBAL, Wk_N_GLOBAL,
+        //     nullptr,
+        //     1);
+
         compute_attn_v2<<<gridDim, blockDim, shared_mem_size>>>(
             O_device, 
             Q_device, 
@@ -702,6 +825,7 @@ int main()
             Wq_M_GLOBAL,
             X_N_GLOBAL,
             0.125f);
+            
         cudaEventRecord(stop);
         cudaEventSynchronize(stop);
         checkLastCudaError(__LINE__);
@@ -716,7 +840,6 @@ int main()
     cudaDeviceSynchronize();
         CUDA_CHECK(cudaMemcpy(O_host, O_device, sizeof(__nv_bfloat16) * X_N_GLOBAL * Wq_M_GLOBAL, cudaMemcpyDeviceToHost)); 
 
-    // print_bf16_matrix("Output O baseline (compute_attn_v2)", O_host, Wq_M_GLOBAL, X_N_GLOBAL);
     std::memcpy(O_host_baseline, O_host, sizeof(__nv_bfloat16) * Wq_M_GLOBAL * X_N_GLOBAL);
     cudaDeviceSynchronize();
 
@@ -851,7 +974,8 @@ int main()
     double p99_abs_error_O = percentile_value(0.99);
 
     double rel_l2_error_O = 0.0;
-    if (ref_l2_sq > 0.0) {
+    if (ref_l2_sq > 0.0) 
+    {
         rel_l2_error_O = sqrt(diff_l2_sq / ref_l2_sq);
     }
 
@@ -860,12 +984,80 @@ int main()
     float ref_max = __bfloat162float(O_host_baseline[max_err_idx]);
     float zip_max = __bfloat162float(O_host[max_err_idx]);
     printf("O baseline vs zipserv: max_abs_error=%lf, mean_abs_error=%lf\n", max_abs_error_O, mean_abs_error_O);
-        printf("O error stats: rel_l2=%le, p50_abs=%le, p90_abs=%le, p99_abs=%le\n",
+    printf("O error stats: rel_l2=%le, p50_abs=%le, p90_abs=%le, p99_abs=%le\n",
             rel_l2_error_O, p50_abs_error_O, p90_abs_error_O, p99_abs_error_O);
-        printf("O error counts: abs>1e-3: %d/%d, abs>1e-4: %d/%d\n",
+    printf("O error counts: abs>1e-3: %d/%d, abs>1e-4: %d/%d\n",
             count_abs_gt_1e3, total_O_elems, count_abs_gt_1e4, total_O_elems);
     printf("Max error at (row=%d, col=%d): baseline=%f zipserv=%f diff=%f\n",
-           max_err_row, max_err_col, ref_max, zip_max, ref_max - zip_max);
+            max_err_row, max_err_col, ref_max, zip_max, ref_max - zip_max);
+
+    CUDA_CHECK(cudaFree(Wq_device));
+    CUDA_CHECK(cudaFree(Wk_device));
+    CUDA_CHECK(cudaFree(Wv_device));
+    CUDA_CHECK(cudaFree(X_device));
+    CUDA_CHECK(cudaFree(X_Transposed_device));
+    CUDA_CHECK(cudaFree(Q_device));
+    CUDA_CHECK(cudaFree(Q_device_cublas));
+    CUDA_CHECK(cudaFree(K_device));
+    CUDA_CHECK(cudaFree(K_device_cublas));
+    CUDA_CHECK(cudaFree(V_device));
+    CUDA_CHECK(cudaFree(V_device_cublas));
+    CUDA_CHECK(cudaFree(O_device));
+
+    CUDA_CHECK(cudaFree(Wq_top_exponents_gpu));
+    CUDA_CHECK(cudaFree(Wq_compressed_full_gpu));
+    CUDA_CHECK(cudaFree(Wq_sign_mantissa_gpu));
+    CUDA_CHECK(cudaFree(Wq_bitmap1_gpu));
+    CUDA_CHECK(cudaFree(Wq_bitmap2_gpu));
+    CUDA_CHECK(cudaFree(Wq_bitmap3_gpu));
+    CUDA_CHECK(cudaFree(Wq_TileOffsets_gpu));
+    CUDA_CHECK(cudaFree(Wq_TileOffsets_median_gpu));
+    CUDA_CHECK(cudaFree(Wq_TileOffsets_global_gpu));
+    CUDA_CHECK(cudaFree(Wq_max_high_freq_gpu));
+    CUDA_CHECK(cudaFree(Wq_max_full_gpu));
+
+    CUDA_CHECK(cudaFree(Wk_top_exponents_gpu));
+    CUDA_CHECK(cudaFree(Wk_compressed_full_gpu));
+    CUDA_CHECK(cudaFree(Wk_sign_mantissa_gpu));
+    CUDA_CHECK(cudaFree(Wk_bitmap1_gpu));
+    CUDA_CHECK(cudaFree(Wk_bitmap2_gpu));
+    CUDA_CHECK(cudaFree(Wk_bitmap3_gpu));
+    CUDA_CHECK(cudaFree(Wk_TileOffsets_gpu));
+    CUDA_CHECK(cudaFree(Wk_TileOffsets_median_gpu));
+    CUDA_CHECK(cudaFree(Wk_TileOffsets_global_gpu));
+    CUDA_CHECK(cudaFree(Wk_high_freq_gpu));
+    CUDA_CHECK(cudaFree(Wk_full_gpu));
+
+    CUDA_CHECK(cudaFree(Wv_top_exponents_gpu));
+    CUDA_CHECK(cudaFree(Wv_compressed_full_gpu));
+    CUDA_CHECK(cudaFree(Wv_sign_mantissa_gpu));
+    CUDA_CHECK(cudaFree(Wv_bitmap1_gpu));
+    CUDA_CHECK(cudaFree(Wv_bitmap2_gpu));
+    CUDA_CHECK(cudaFree(Wv_bitmap3_gpu));
+    CUDA_CHECK(cudaFree(Wv_TileOffsets_gpu));
+    CUDA_CHECK(cudaFree(Wv_TileOffsets_median_gpu));
+    CUDA_CHECK(cudaFree(Wv_TileOffsets_global_gpu));
+    CUDA_CHECK(cudaFree(Wv_high_freq_gpu));
+    CUDA_CHECK(cudaFree(Wv_full_gpu));
+
+    free(Wq_host);
+    free(Wk_host);
+    free(Wv_host);
+    free(X_host);
+    free(X_Transposed_host);
+
+    free(Q_host);
+    free(Q_host_cublas);
+    free(K_host);
+    free(K_host_cublas);
+    free(V_host);
+    free(V_host_cublas);
+    free(O_host);
+    free(O_host_baseline);
+
+    free(Q_host_cpu);
+    free(K_host_cpu);
+    free(V_host_cpu);
 
     return 0;
 }

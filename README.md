@@ -16,5 +16,10 @@ cd ../kernel_benchmark && source test_env && make
 ```bash
 source Init.sh && cd kernel_benchmark && source test_env &&cd ..
 
-cd build && make clean && make && cd ../kernel_benchmark && make clean && make && ./test_zipserv_fa2 && cd ..
+cd build && make clean && make && cd ../kernel_benchmark && make clean && make && cd ..
+
+cd kernel_benchmark && ./test_zipserv_fa2 && cd ..
+
+cd kernel_benchmark && ./run_isolated_sweep.sh && cd ..
+
 ```
