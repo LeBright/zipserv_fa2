@@ -29,7 +29,7 @@ cudaError_t LaunchKernelWithConfig_4Param(
 {
     using ConfigType = TilingConfigBF16TripleBitmap<4, 1, 1, 1>;
     
-    static int SHMEM_SZ = max(
+    int SHMEM_SZ = max(
         (max_high_freq_count * sizeof(uint8_t)*2) + 
         (max_full_count * sizeof(__nv_bfloat16)*2) +
         (ConfigType::TILE_N * TILE_K * sizeof(__nv_bfloat16) * 2) + 
@@ -77,7 +77,7 @@ cudaError_t LaunchKernelWithConfig_3Param(
 {
     using ConfigType = TilingConfigBF16TripleBitmap<4, 1, BLOCK_COL_WARPS>;
     
-    static int SHMEM_SZ = max(
+    int SHMEM_SZ = max(
         (max_high_freq_count * sizeof(uint8_t)*2) + 
         (max_full_count * sizeof(__nv_bfloat16)*2) +
         (ConfigType::TILE_N * TILE_K * sizeof(__nv_bfloat16) * 2) + 
