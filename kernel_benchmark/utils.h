@@ -632,126 +632,129 @@ int CompressBF16MatrixTripleBitmap_Host(
     *sign_mantissa = (uint8_t*)realloc(*sign_mantissa, sign_mantissa_offset);
     *compressed_full = (__nv_bfloat16*)realloc(*compressed_full, full_offset * sizeof(__nv_bfloat16));
     
-    // Following is detailed debugging information
-    std::cout << "\n========= Detailed Compression Debug Info =========\n";
-    
-    // 1. Basic statistics
-    std::cout << "Matrix size: " << M << "x" << K << "\n";
-    std::cout << "Tiling info: \n";
-    std::cout << "  Small tile size: " << tile_M << "x" << tile_K << ", count: " << num_tiles << " (" << num_tiles_M << "x" << num_tiles_K << ")\n";
-    std::cout << "  Medium tile size: " << tile_M_median << "x" << tile_K_median << ", count: " << num_median_tiles << " (" << num_median_tiles_M << "x" << num_median_tiles_K << ")\n";
-    std::cout << "  Global tile size: " << tile_M_global << "x" << tile_K_global << ", count: " << num_global_tiles << " (" << num_global_tiles_M << "x" << num_global_tiles_K << ")\n";
-    
-    // 2. High-frequency exponent list
-    std::cout << "High-freq exponent list (7 values): ";
-    for (int i = 0; i < 7; ++i) {
-        std::cout << top_exponents[i] << " ";
+    // Verbose compression logs are disabled by default to keep benchmark output concise.
+    constexpr bool kVerboseCompressionLog = false;
+    if (kVerboseCompressionLog) {
+        std::cout << "\n========= Detailed Compression Debug Info =========\n";
+
+        // 1. Basic statistics
+        std::cout << "Matrix size: " << M << "x" << K << "\n";
+        std::cout << "Tiling info: \n";
+        std::cout << "  Small tile size: " << tile_M << "x" << tile_K << ", count: " << num_tiles << " (" << num_tiles_M << "x" << num_tiles_K << ")\n";
+        std::cout << "  Medium tile size: " << tile_M_median << "x" << tile_K_median << ", count: " << num_median_tiles << " (" << num_median_tiles_M << "x" << num_median_tiles_K << ")\n";
+        std::cout << "  Global tile size: " << tile_M_global << "x" << tile_K_global << ", count: " << num_global_tiles << " (" << num_global_tiles_M << "x" << num_global_tiles_K << ")\n";
+
+        // 2. High-frequency exponent list
+        std::cout << "High-freq exponent list (7 values): ";
+        for (int i = 0; i < 7; ++i) {
+            std::cout << top_exponents[i] << " ";
+        }
+        std::cout << "\n";
+
+        // 3. Element statistics
+        std::cout << "\nElement statistics:\n";
+        std::cout << "  High-frequency exponent elements: " << high_freq_total << " ("
+                  << std::fixed << std::setprecision(2)
+                  << (100.0f * high_freq_total / (M * K)) << "%)\n";
+        std::cout << "  Non-high-frequency exponent elements: " << full_value_total << " ("
+                  << std::fixed << std::setprecision(2)
+                  << (100.0f * full_value_total / (M * K)) << "%)\n";
+        std::cout << "  Padding count in high-frequency elements: " << total_high_freq_padding << " elements\n";
+        std::cout << "  Padding count in non-high-frequency elements: " << total_full_padding << " elements\n";
+        std::cout << "  Max high-frequency elements (per global tile): " << max_high_freq_count << "\n";
+        std::cout << "  Max non-high-frequency elements (per global tile): " << max_full_count << "\n";
+
+        // 4. Memory usage
+        std::cout << "\nMemory usage:\n";
+        std::cout << "  Sign+mantissa array size: " << sign_mantissa_offset << " bytes\n";
+        std::cout << "  Full BF16 value array size: " << full_offset * sizeof(__nv_bfloat16) << " bytes\n";
+        std::cout << "  Bitmap size: " << num_tiles * sizeof(uint64_t) * 3 << " bytes\n";
+        std::cout << "  Small tile offset array size: " << num_tiles * 2 * sizeof(int) << " bytes\n";
+        std::cout << "  Medium tile offset array size: " << num_median_tiles * 2 * sizeof(int) << " bytes\n";
+        std::cout << "  Global tile offset array size: " << (num_global_tiles + 1) * 2 * sizeof(int) << " bytes\n";
+
+        // 5. Compression ratio
+        size_t original_size = M * K * sizeof(uint16_t);  // Original BF16 size
+        size_t compressed_size =
+            sign_mantissa_offset +
+            (full_offset * sizeof(__nv_bfloat16)) +
+            (num_tiles * sizeof(uint64_t) * 3) +  // Three bitmaps
+            // (num_tiles * 2 * sizeof(int)) +   // TileOffsets
+            (num_median_tiles * 2 * sizeof(int)) +  // TileOffsets_median
+            ((num_global_tiles + 1) * 2 * sizeof(int));  // TileOffsets_global
+
+        float compression_ratio = static_cast<float>(original_size) / compressed_size;
+
+        std::cout << "  Original size: " << original_size << " bytes\n";
+        std::cout << "  Compressed size: " << compressed_size << " bytes\n";
+        std::cout << "  Compression ratio: " << std::fixed << std::setprecision(3) << compression_ratio << ":1\n";
+
+        // 6. Print partial array contents for verification
+        int print_limit = std::min(20, num_tiles); // Limit number of entries to print
+
+        std::cout << "\nBitmap examples (first " << print_limit << " small tiles):\n";
+        std::cout << "  TileID   Bitmap1           Bitmap2           Bitmap3           HF-Count  NHF-Count\n";
+        for (int i = 0; i < print_limit; ++i) {
+            std::cout << "  " << std::setw(7) << i << "   "
+                      << std::hex << std::setw(16) << std::setfill('0') << (*bitmap1)[i] << "   "
+                      << std::hex << std::setw(16) << std::setfill('0') << (*bitmap2)[i] << "   "
+                      << std::hex << std::setw(16) << std::setfill('0') << (*bitmap3)[i] << "   "
+                      << std::dec << std::setfill(' ') << std::setw(8) << (*TileOffsets)[i*2] << "  "
+                      << std::setw(10) << (*TileOffsets)[i*2+1] << "\n";
+        }
+
+        print_limit = std::min(10, num_median_tiles);
+        std::cout << "\nMedium tile offset examples (first " << print_limit << " medium tiles):\n";
+        std::cout << "  TileID   HF-Cumul-Count  NHF-Cumul-Count\n";
+        for (int i = 0; i < print_limit; ++i) {
+            std::cout << "  " << std::setw(7) << i << "   "
+                      << std::setw(12) << (*TileOffsets_median)[i*2] << "   "
+                      << std::setw(14) << (*TileOffsets_median)[i*2+1] << "\n";
+        }
+
+        print_limit = std::min(5, num_global_tiles);
+        std::cout << "\nGlobal tile offset examples (first " << print_limit << " global tiles):\n";
+        std::cout << "  TileID   HF-Cumul-Count  NHF-Cumul-Count\n";
+        for (int i = 0; i <= print_limit; ++i) { // Include initial offset (0)
+            std::cout << "  " << std::setw(7) << i << "   "
+                      << std::setw(12) << (*TileOffsets_global)[i*2] << "   "
+                      << std::setw(14) << (*TileOffsets_global)[i*2+1] << "\n";
+        }
+
+        // 7. Print partial contents of sign_mantissa and compressed_full
+        print_limit = std::min(20, sign_mantissa_offset);
+        std::cout << "\nSign+mantissa array examples (first " << print_limit << " bytes):\n";
+        std::cout << "  Index   Hex        Sign  Mantissa\n";
+        for (int i = 0; i < print_limit; ++i) {
+            uint8_t value = (*sign_mantissa)[i];
+            uint8_t sign = (value >> 7) & 0x1;
+            uint8_t mantissa = value & 0x7F;
+            std::cout << "  " << std::setw(5) << i << "   "
+                      << std::hex << std::setw(2) << std::setfill('0') << static_cast<int>(value) << "       "
+                      << std::dec << std::setfill(' ') << static_cast<int>(sign) << "     "
+                      << static_cast<int>(mantissa) << "\n";
+        }
+
+        print_limit = std::min(10, full_offset);
+        std::cout << "\nFull BF16 value array examples (first " << print_limit << " values):\n";
+        std::cout << "  Index   BF16 bits  Sign  Exponent  Mantissa  Float\n";
+        for (int i = 0; i < print_limit; ++i) {
+            __nv_bfloat16 bf16_val = (*compressed_full)[i];
+            uint16_t bits = __bfloat16_as_ushort(bf16_val);
+            uint8_t sign = (bits >> 15) & 0x1;
+            uint8_t exponent = (bits >> 7) & 0xFF;
+            uint8_t mantissa = bits & 0x7F;
+            float f_val = __bfloat162float(bf16_val);
+
+            std::cout << "  " << std::setw(5) << i << "   "
+                      << std::hex << std::setw(4) << std::setfill('0') << bits << "       "
+                      << std::dec << std::setfill(' ') << static_cast<int>(sign) << "     "
+                      << std::setw(3) << static_cast<int>(exponent) << "    "
+                      << std::setw(3) << static_cast<int>(mantissa) << "    "
+                      << std::fixed << std::setprecision(6) << f_val << "\n";
+        }
+        std::cout << "======================================\n";
     }
-    std::cout << "\n";
-    
-    // 3. Element statistics
-    std::cout << "\nElement statistics:\n";
-    std::cout << "  High-frequency exponent elements: " << high_freq_total << " (" 
-             << std::fixed << std::setprecision(2) 
-             << (100.0f * high_freq_total / (M * K)) << "%)\n";
-    std::cout << "  Non-high-frequency exponent elements: " << full_value_total << " (" 
-             << std::fixed << std::setprecision(2) 
-             << (100.0f * full_value_total / (M * K)) << "%)\n";
-    std::cout << "  Padding count in high-frequency elements: " << total_high_freq_padding << " elements\n";
-    std::cout << "  Padding count in non-high-frequency elements: " << total_full_padding << " elements\n";
-    std::cout << "  Max high-frequency elements (per global tile): " << max_high_freq_count << "\n";
-    std::cout << "  Max non-high-frequency elements (per global tile): " << max_full_count << "\n";
-    
-    // 4. Memory usage
-    std::cout << "\nMemory usage:\n";
-    std::cout << "  Sign+mantissa array size: " << sign_mantissa_offset << " bytes\n";
-    std::cout << "  Full BF16 value array size: " << full_offset * sizeof(__nv_bfloat16) << " bytes\n";
-    std::cout << "  Bitmap size: " << num_tiles * sizeof(uint64_t) * 3 << " bytes\n";
-    std::cout << "  Small tile offset array size: " << num_tiles * 2 * sizeof(int) << " bytes\n";
-    std::cout << "  Medium tile offset array size: " << num_median_tiles * 2 * sizeof(int) << " bytes\n";
-    std::cout << "  Global tile offset array size: " << (num_global_tiles + 1) * 2 * sizeof(int) << " bytes\n";
-    
-    // 5. Compression ratio
-    size_t original_size = M * K * sizeof(uint16_t);  // Original BF16 size
-    size_t compressed_size = 
-        sign_mantissa_offset + 
-        (full_offset * sizeof(__nv_bfloat16)) +
-        (num_tiles * sizeof(uint64_t) * 3) +  // Three bitmaps
-        // (num_tiles * 2 * sizeof(int)) +   // TileOffsets
-        (num_median_tiles * 2 * sizeof(int)) +  // TileOffsets_median
-        ((num_global_tiles + 1) * 2 * sizeof(int));  // TileOffsets_global
-    
-    float compression_ratio = static_cast<float>(original_size) / compressed_size;
-    
-    std::cout << "  Original size: " << original_size << " bytes\n";
-    std::cout << "  Compressed size: " << compressed_size << " bytes\n";
-    std::cout << "  Compression ratio: " << std::fixed << std::setprecision(3) << compression_ratio << ":1\n";
-    
-    // 6. Print partial array contents for verification
-    int print_limit = std::min(20, num_tiles); // Limit number of entries to print
-    
-    std::cout << "\nBitmap examples (first " << print_limit << " small tiles):\n";
-    std::cout << "  TileID   Bitmap1           Bitmap2           Bitmap3           HF-Count  NHF-Count\n";
-    for (int i = 0; i < print_limit; ++i) {
-        std::cout << "  " << std::setw(7) << i << "   " 
-                 << std::hex << std::setw(16) << std::setfill('0') << (*bitmap1)[i] << "   "
-                 << std::hex << std::setw(16) << std::setfill('0') << (*bitmap2)[i] << "   "
-                 << std::hex << std::setw(16) << std::setfill('0') << (*bitmap3)[i] << "   "
-                 << std::dec << std::setfill(' ') << std::setw(8) << (*TileOffsets)[i*2] << "  "
-                 << std::setw(10) << (*TileOffsets)[i*2+1] << "\n";
-    }
-    
-    print_limit = std::min(10, num_median_tiles);
-    std::cout << "\nMedium tile offset examples (first " << print_limit << " medium tiles):\n";
-    std::cout << "  TileID   HF-Cumul-Count  NHF-Cumul-Count\n";
-    for (int i = 0; i < print_limit; ++i) {
-        std::cout << "  " << std::setw(7) << i << "   " 
-                 << std::setw(12) << (*TileOffsets_median)[i*2] << "   "
-                 << std::setw(14) << (*TileOffsets_median)[i*2+1] << "\n";
-    }
-    
-    print_limit = std::min(5, num_global_tiles);
-    std::cout << "\nGlobal tile offset examples (first " << print_limit << " global tiles):\n";
-    std::cout << "  TileID   HF-Cumul-Count  NHF-Cumul-Count\n";
-    for (int i = 0; i <= print_limit; ++i) { // Include initial offset (0)
-        std::cout << "  " << std::setw(7) << i << "   " 
-                 << std::setw(12) << (*TileOffsets_global)[i*2] << "   "
-                 << std::setw(14) << (*TileOffsets_global)[i*2+1] << "\n";
-    }
-    
-    // 7. Print partial contents of sign_mantissa and compressed_full
-    print_limit = std::min(20, sign_mantissa_offset);
-    std::cout << "\nSign+mantissa array examples (first " << print_limit << " bytes):\n";
-    std::cout << "  Index   Hex        Sign  Mantissa\n";
-    for (int i = 0; i < print_limit; ++i) {
-        uint8_t value = (*sign_mantissa)[i];
-        uint8_t sign = (value >> 7) & 0x1;
-        uint8_t mantissa = value & 0x7F;
-        std::cout << "  " << std::setw(5) << i << "   " 
-                 << std::hex << std::setw(2) << std::setfill('0') << static_cast<int>(value) << "       "
-                 << std::dec << std::setfill(' ') << static_cast<int>(sign) << "     "
-                 << static_cast<int>(mantissa) << "\n";
-    }
-    
-    print_limit = std::min(10, full_offset);
-    std::cout << "\nFull BF16 value array examples (first " << print_limit << " values):\n";
-    std::cout << "  Index   BF16 bits  Sign  Exponent  Mantissa  Float\n";
-    for (int i = 0; i < print_limit; ++i) {
-        __nv_bfloat16 bf16_val = (*compressed_full)[i];
-        uint16_t bits = __bfloat16_as_ushort(bf16_val);
-        uint8_t sign = (bits >> 15) & 0x1;
-        uint8_t exponent = (bits >> 7) & 0xFF;
-        uint8_t mantissa = bits & 0x7F;
-        float f_val = __bfloat162float(bf16_val);
-        
-        std::cout << "  " << std::setw(5) << i << "   " 
-                 << std::hex << std::setw(4) << std::setfill('0') << bits << "       "
-                 << std::dec << std::setfill(' ') << static_cast<int>(sign) << "     "
-                 << std::setw(3) << static_cast<int>(exponent) << "    "
-                 << std::setw(3) << static_cast<int>(mantissa) << "    "
-                 << std::fixed << std::setprecision(6) << f_val << "\n";
-    }
-    std::cout << "======================================\n";
     return num_global_tiles;
 }
 // CPU version of BF16 initialization function

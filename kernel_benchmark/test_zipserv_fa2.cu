@@ -738,7 +738,7 @@ int main(int argc, char** argv)
 
     cudaDeviceSynchronize();
 
-    dim3 gridDim(Wq_M_GLOBAL/kBlockM, X_M_GLOBAL/HeadDim, 1);
+    dim3 gridDim(X_N_GLOBAL/kBlockM, Wq_M_GLOBAL/HeadDim, 1);
     dim3 blockDim(32*4,1,1);
     // int shared_mem_size = kBlockM * HeadDim * sizeof(__nv_bfloat16)*5;
     int shared_mem_size = (kBlockM * HeadDim * sizeof(__nv_bfloat16));         // V
@@ -751,10 +751,43 @@ int main(int argc, char** argv)
     //                     sizeof(__nv_bfloat16)*Wk_max_high_freq_count*2);    
     // shared_mem_size += max(sizeof(uint8_t)*Wq_max_full_count*2,
     //                     sizeof(uint8_t)*Wk_max_full_count*2);               
-    int shared_mem_maxsize = 0;        
-    CUDA_CHECK(cudaDeviceGetAttribute(&shared_mem_maxsize,cudaDevAttrMaxSharedMemoryPerBlock,0));
-    shared_mem_size = min(shared_mem_size, shared_mem_maxsize);
-    printf("%d KB shared memory per block\n", shared_mem_size / 1024);
+    int shared_mem_maxsize = 0;
+    int shared_mem_optin_maxsize = 0;
+    CUDA_CHECK(cudaDeviceGetAttribute(&shared_mem_maxsize, cudaDevAttrMaxSharedMemoryPerBlock, 0));
+    CUDA_CHECK(cudaDeviceGetAttribute(&shared_mem_optin_maxsize, cudaDevAttrMaxSharedMemoryPerBlockOptin, 0));
+
+    if (shared_mem_size > shared_mem_optin_maxsize) {
+        fprintf(stderr,
+                "Error: requested dynamic shared memory %d bytes exceeds opt-in limit %d bytes\n",
+                shared_mem_size,
+                shared_mem_optin_maxsize);
+        return -1;
+    }
+
+    if (shared_mem_size > shared_mem_maxsize) {
+        CUDA_CHECK(cudaFuncSetAttribute(compute_attn_v2,
+                                        cudaFuncAttributeMaxDynamicSharedMemorySize,
+                                        shared_mem_size));
+        CUDA_CHECK(cudaFuncSetAttribute(compute_attn_v2_zipserv,
+                                        cudaFuncAttributeMaxDynamicSharedMemorySize,
+                                        shared_mem_size));
+        CUDA_CHECK(cudaFuncSetAttribute(compute_attn_v2_zipserv_prepareK,
+                                        cudaFuncAttributeMaxDynamicSharedMemorySize,
+                                        shared_mem_size));
+        CUDA_CHECK(cudaFuncSetAttribute(compute_attn_v2_zipserv_prepareQK,
+                                        cudaFuncAttributeMaxDynamicSharedMemorySize,
+                                        shared_mem_size));
+    }
+
+    printf("requested dynamic shared memory: %d KB (default limit: %d KB, opt-in limit: %d KB)\n",
+           shared_mem_size / 1024,
+           shared_mem_maxsize / 1024,
+           shared_mem_optin_maxsize / 1024);
+
+    float baseline_mode0_total_ms = -1.0f;
+    float baseline_mode0_mm_ms = -1.0f;
+    float baseline_mode0_attn_ms = -1.0f;
+    float zipserv_mode0_total_ms = -1.0f;
 
     // fa2
     if(mode==0)
@@ -792,21 +825,25 @@ int main(int argc, char** argv)
                 Q_device, 
                 K_device,
                 V_device,
-                Wq_M_GLOBAL,
-                Wk_M_GLOBAL,
-                Wv_M_GLOBAL,
-                Wq_M_GLOBAL,
                 X_N_GLOBAL,
+                X_N_GLOBAL,
+                X_N_GLOBAL,
+                X_N_GLOBAL,
+                Wq_M_GLOBAL,
                 0.125f);
         }
 
         float total_milliseconds_compute_attn = 0.0f;
+        float total_milliseconds_mm_api = 0.0f;
+        float total_milliseconds_attn_kernel = 0.0f;
         for (int i = 0; i < BENCHMARK_ITERATION; i++) 
         {
             // Flush L2 cache before each iteration to simulate real-world cold cache scenario
             flush_l2_cache();
-            
-            // Measure only the GEMM operation time, excluding cache flush overhead
+
+            float iter_mm_ms = 0.0f;
+            float iter_attn_ms = 0.0f;
+
             cudaEventRecord(start);
 
             BF16TripleBitmap_MM_API(
@@ -821,6 +858,11 @@ int main(int argc, char** argv)
                 Wq_M_GLOBAL, X_N_GLOBAL, Wq_N_GLOBAL,
                 nullptr,
                 1);
+
+            cudaEventRecord(stop);
+            cudaEventSynchronize(stop);
+            cudaEventElapsedTime(&iter_mm_ms, start, stop);
+            total_milliseconds_mm_api += iter_mm_ms;
 
             // BF16TripleBitmap_MM_API(
             //     0,
@@ -840,23 +882,36 @@ int main(int argc, char** argv)
                 Q_device, 
                 K_device,
                 V_device,
-                Wq_M_GLOBAL,
-                Wk_M_GLOBAL,
-                Wv_M_GLOBAL,
-                Wq_M_GLOBAL,
                 X_N_GLOBAL,
+                X_N_GLOBAL,
+                X_N_GLOBAL,
+                X_N_GLOBAL,
+                Wq_M_GLOBAL,
                 0.125f);
                 
             cudaEventRecord(stop);
             cudaEventSynchronize(stop);
             checkLastCudaError(__LINE__);
-            float iter_time = 0.0f;
-            cudaEventElapsedTime(&iter_time, start, stop);
-            total_milliseconds_compute_attn += iter_time;
+            cudaEventElapsedTime(&iter_attn_ms, start, stop);
+            total_milliseconds_attn_kernel += iter_attn_ms;
+            total_milliseconds_compute_attn += (iter_mm_ms + iter_attn_ms);
         }
             
         float milliseconds_compute_attn = total_milliseconds_compute_attn / BENCHMARK_ITERATION;
+        float milliseconds_mm_api = total_milliseconds_mm_api / BENCHMARK_ITERATION;
+        float milliseconds_attn_kernel = total_milliseconds_attn_kernel / BENCHMARK_ITERATION;
+        baseline_mode0_total_ms = milliseconds_compute_attn;
+        baseline_mode0_mm_ms = milliseconds_mm_api;
+        baseline_mode0_attn_ms = milliseconds_attn_kernel;
         printf("Average compute_attn_v2 execution time over %d iterations: %f ms\n", BENCHMARK_ITERATION, milliseconds_compute_attn);
+        if (milliseconds_compute_attn > 0.0f) {
+            printf("  - MM API (Q prepare) avg: %f ms (%.2f%%)\n",
+                   milliseconds_mm_api,
+                   milliseconds_mm_api * 100.0f / milliseconds_compute_attn);
+            printf("  - attention kernel avg:   %f ms (%.2f%%)\n",
+                   milliseconds_attn_kernel,
+                   milliseconds_attn_kernel * 100.0f / milliseconds_compute_attn);
+        }
         
         cudaDeviceSynchronize();
             CUDA_CHECK(cudaMemcpy(O_host, O_device, sizeof(__nv_bfloat16) * X_N_GLOBAL * Wq_M_GLOBAL, cudaMemcpyDeviceToHost)); 
@@ -899,11 +954,11 @@ int main(int argc, char** argv)
                 Q_device, 
                 K_device,
                 V_device,
-                Wq_M_GLOBAL,
-                Wk_M_GLOBAL,
-                Wv_M_GLOBAL,
-                Wq_M_GLOBAL,
                 X_N_GLOBAL,
+                X_N_GLOBAL,
+                X_N_GLOBAL,
+                X_N_GLOBAL,
+                Wq_M_GLOBAL,
                 0.125f);
         }
 
@@ -1061,9 +1116,10 @@ int main(int argc, char** argv)
         {
             compute_attn_v2_zipserv<<<gridDim, blockDim, shared_mem_size>>>(
                 O_device, 
+                Q_device,
                 K_device, V_device, 
-                Wk_N_GLOBAL, Wv_N_GLOBAL,  X_N_GLOBAL,
-                X_N_GLOBAL, 
+                X_N_GLOBAL, X_N_GLOBAL,  X_N_GLOBAL,
+                Wq_M_GLOBAL, 
                 0.125f,
                 Wq_sign_mantissa_gpu,
                 Wq_compressed_full_gpu,
@@ -1090,9 +1146,10 @@ int main(int argc, char** argv)
             cudaEventRecord(start);
             compute_attn_v2_zipserv<<<gridDim, blockDim, shared_mem_size>>>(
                 O_device, 
+                Q_device,
                 K_device, V_device, 
-                Wk_N_GLOBAL, Wv_N_GLOBAL,  X_N_GLOBAL,
-                X_N_GLOBAL, 
+                X_N_GLOBAL, X_N_GLOBAL,  X_N_GLOBAL,
+                Wq_M_GLOBAL, 
                 0.125f,
                 Wq_sign_mantissa_gpu,
                 Wq_compressed_full_gpu,
@@ -1115,7 +1172,17 @@ int main(int argc, char** argv)
             total_milliseconds_compute_attn_zipserv += iter_time;
         }
         float milliseconds_compute_attn_zipserv = total_milliseconds_compute_attn_zipserv / BENCHMARK_ITERATION;
+        zipserv_mode0_total_ms = milliseconds_compute_attn_zipserv;
         printf("Average compute_attn_v2_zipserv execution time over %d iterations: %f ms\n", BENCHMARK_ITERATION, milliseconds_compute_attn_zipserv);
+        if (baseline_mode0_total_ms > 0.0f && baseline_mode0_attn_ms > 0.0f) {
+            printf("Mode0 profiling summary:\n");
+            printf("  - baseline total (MM API + attn): %f ms\n", baseline_mode0_total_ms);
+            printf("  - baseline MM API only:           %f ms\n", baseline_mode0_mm_ms);
+            printf("  - baseline attn only:             %f ms\n", baseline_mode0_attn_ms);
+            printf("  - zipserv fused total:            %f ms\n", zipserv_mode0_total_ms);
+            printf("  - zipserv / baseline_total:       %.3fx\n", zipserv_mode0_total_ms / baseline_mode0_total_ms);
+            printf("  - zipserv / baseline_attn_only:   %.3fx\n", zipserv_mode0_total_ms / baseline_mode0_attn_ms);
+        }
         
         cudaDeviceSynchronize();
 
@@ -1130,7 +1197,7 @@ int main(int argc, char** argv)
                 O_device, 
                 V_device, 
                 Wk_N_GLOBAL, Wv_N_GLOBAL,  X_N_GLOBAL,
-                X_N_GLOBAL, 
+                X_M_GLOBAL, 
                 0.125f,
                 Wq_sign_mantissa_gpu,
                 Wq_compressed_full_gpu,
@@ -1172,7 +1239,7 @@ int main(int argc, char** argv)
                 O_device, 
                 V_device, 
                 Wk_N_GLOBAL, Wv_N_GLOBAL,  X_N_GLOBAL,
-                X_N_GLOBAL, 
+                X_M_GLOBAL, 
                 0.125f,
                 Wq_sign_mantissa_gpu,
                 Wq_compressed_full_gpu,
@@ -1223,7 +1290,7 @@ int main(int argc, char** argv)
                 O_device, 
                 Q_device, V_device, 
                 Wq_N_GLOBAL, Wv_N_GLOBAL,  X_N_GLOBAL,
-                X_N_GLOBAL, 
+                X_M_GLOBAL, 
                 0.125f,
                 Wk_sign_mantissa_gpu,
                 Wk_compressed_full_gpu,
@@ -1252,7 +1319,7 @@ int main(int argc, char** argv)
                 O_device, 
                 Q_device, V_device, 
                 Wq_N_GLOBAL, Wv_N_GLOBAL,  X_N_GLOBAL,
-                X_N_GLOBAL, 
+                X_M_GLOBAL, 
                 0.125f,
                 Wk_sign_mantissa_gpu,
                 Wk_compressed_full_gpu,

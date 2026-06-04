@@ -578,6 +578,7 @@ __device__ void BF16TripleBitmap_MM_Kernel_prepareQKV(
 
 __global__ void compute_attn_v2_zipserv(
                                 void* O_ptr, 
+                                const void* Q_ptr,
                                 const void* K_ptr, const void* V_ptr, 
                                 int k_len, int v_len,  int o_len,
                                 int row_stride, 
@@ -600,6 +601,7 @@ __global__ void compute_attn_v2_zipserv(
     const int m_block = blockIdx.x; // one block process Q_len/kBlockM (AKA N/Br in fa2 paper ) m_blocks 
     const int base_id = blockIdx.y; // it tells us the block process which head(base_id%headnum) of which batch(base_id/headnum) 
     const int tidx = threadIdx.x;    
+    // int q_len=k_len;
 
     if (m_block * kBlockM >= o_len) return;
 
@@ -610,6 +612,9 @@ __global__ void compute_attn_v2_zipserv(
 
     auto base_offset = base_id * HeadDim;
 
+    // auto Q = make_tensor(make_gmem_ptr<__nv_bfloat16>((__nv_bfloat16*)(Q_ptr) + base_offset),
+    //                      make_shape(q_len,Int<HeadDim>{}),
+    //                      make_stride(row_stride, _1{}));
     auto K = make_tensor(make_gmem_ptr<__nv_bfloat16>((__nv_bfloat16*)(K_ptr) + base_offset),
                         make_shape(k_len,Int<HeadDim>{}),
                         make_stride(row_stride, _1{}));
@@ -621,6 +626,8 @@ __global__ void compute_attn_v2_zipserv(
                         make_stride(row_stride, _1{}));
 
     // global memory
+    // auto gQ = local_tile(Q, make_tile(Int<kBlockM>{}, Int<HeadDim>{}),
+    //                      make_coord(m_block, _));
     auto gK = local_tile(K,
                          make_tile(Int<kBlockN>{}, Int<HeadDim>{}),
                          make_coord(0, _));
@@ -638,6 +645,7 @@ __global__ void compute_attn_v2_zipserv(
     // global memory to shared memory copy
     GmemTiledCopyQKV gmem_tiled_copy_QKV;
     auto gmem_thr_copy_QKV = gmem_tiled_copy_QKV.get_thread_slice(tidx);
+    // auto tQgQ = gmem_thr_copy_QKV.partition_S(gQ(_, _, 0));
     auto tQsQ = gmem_thr_copy_QKV.partition_D(sQ);
     auto tKgK = gmem_thr_copy_QKV.partition_S(gK(_, _, 0));
     auto tKsK = gmem_thr_copy_QKV.partition_D(sK);
@@ -669,6 +677,9 @@ __global__ void compute_attn_v2_zipserv(
     
     // copy Q
     // cute::copy(gmem_tiled_copy_QKV, tQgQ, tQsQ);
+    // cp_async_fence();
+    // cp_async_wait<0>();
+    // __syncthreads();
     BF16TripleBitmap_MM_Kernel_prepareQKV(Q_smem_ptr, 
                                           Q_smem_ptr, 
                                           Q_SignMantissa, Q_CompressedFull, Q_Bitmap1, Q_Bitmap2, Q_Bitmap3, 
@@ -696,15 +707,6 @@ __global__ void compute_attn_v2_zipserv(
     }
 
     // copy KV
-    // BF16TripleBitmap_MM_Kernel_prepareQKV(K_smem_ptr,
-    //                                       K_smem_ptr,
-    //                                       K_SignMantissa, K_CompressedFull, K_Bitmap1, K_Bitmap2, K_Bitmap3,
-    //                                       K_TileOffsets_Median, K_TileOffsets_Global, K_max_high_freq_count, K_max_full_count,
-    //                                       K_start_exp,
-    //                                       X,
-    //                                       K_M_Global, K_N_Global, K_K_Global,
-    //                                       base_id,
-    //                                       0, 1);
     cute::copy(gmem_tiled_copy_QKV, tKgK, tKsK);
     cp_async_fence();
     cute::copy(gmem_tiled_copy_QKV, tVgV, tVsV);
@@ -857,16 +859,6 @@ __global__ void compute_attn_v2_zipserv(
 
         if(n_block<n_block_max-1)
         {
-            // BF16TripleBitmap_MM_Kernel_prepareQKV(K_smem_ptr,
-            //                                       K_smem_ptr,
-            //                                       K_SignMantissa, K_CompressedFull, K_Bitmap1, K_Bitmap2, K_Bitmap3,
-            //                                       K_TileOffsets_Median, K_TileOffsets_Global, K_max_high_freq_count, K_max_full_count,
-            //                                       K_start_exp,
-            //                                       X,
-            //                                       K_M_Global, K_N_Global, K_K_Global,
-            //                                       base_id,
-            //                                       n_block+1, 1);
-
             gV = local_tile(V, 
                             make_tile(Int<kBlockN>{}, Int<HeadDim>{}),
                             make_coord(n_block+1, _));
