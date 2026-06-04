@@ -737,7 +737,6 @@ int main(int argc, char** argv)
     // printf("V Matrix - Max Absolute Error: %lf\n", max_abs_error_V);
 
     cudaDeviceSynchronize();
-
     dim3 gridDim(X_N_GLOBAL/kBlockM, Wq_M_GLOBAL/HeadDim, 1);
     dim3 blockDim(32*4,1,1);
     // int shared_mem_size = kBlockM * HeadDim * sizeof(__nv_bfloat16)*5;
