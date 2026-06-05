@@ -578,7 +578,7 @@ __device__ void BF16TripleBitmap_MM_Kernel_prepareQKV(
 
 __global__ void compute_attn_v2_zipserv(
                                 void* O_ptr, 
-                                const void* Q_ptr,
+                                // const void* Q_ptr,
                                 const void* K_ptr, const void* V_ptr, 
                                 int k_len, int v_len,  int o_len,
                                 int row_stride, 

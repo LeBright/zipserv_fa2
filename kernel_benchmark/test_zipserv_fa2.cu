@@ -844,7 +844,6 @@ int main(int argc, char** argv)
             float iter_attn_ms = 0.0f;
 
             cudaEventRecord(start);
-
             BF16TripleBitmap_MM_API(
                 0,
                 Wq_sign_mantissa_gpu,Wq_compressed_full_gpu,
@@ -857,7 +856,6 @@ int main(int argc, char** argv)
                 Wq_M_GLOBAL, X_N_GLOBAL, Wq_N_GLOBAL,
                 nullptr,
                 1);
-
             cudaEventRecord(stop);
             cudaEventSynchronize(stop);
             cudaEventElapsedTime(&iter_mm_ms, start, stop);
@@ -876,6 +874,7 @@ int main(int argc, char** argv)
             //     nullptr,
             //     1);
 
+            cudaEventRecord(start);
             compute_attn_v2<<<gridDim, blockDim, shared_mem_size>>>(
                 O_device, 
                 Q_device, 
@@ -887,12 +886,12 @@ int main(int argc, char** argv)
                 X_N_GLOBAL,
                 Wq_M_GLOBAL,
                 0.125f);
-                
             cudaEventRecord(stop);
             cudaEventSynchronize(stop);
             checkLastCudaError(__LINE__);
             cudaEventElapsedTime(&iter_attn_ms, start, stop);
             total_milliseconds_attn_kernel += iter_attn_ms;
+
             total_milliseconds_compute_attn += (iter_mm_ms + iter_attn_ms);
         }
             
@@ -902,14 +901,14 @@ int main(int argc, char** argv)
         baseline_mode0_total_ms = milliseconds_compute_attn;
         baseline_mode0_mm_ms = milliseconds_mm_api;
         baseline_mode0_attn_ms = milliseconds_attn_kernel;
-        printf("Average compute_attn_v2 execution time over %d iterations: %f ms\n", BENCHMARK_ITERATION, milliseconds_compute_attn);
-        if (milliseconds_compute_attn > 0.0f) {
+        printf("Average (BF16TripleBitmap_MM_API + compute_attn_v2) execution time over %d iterations: %f ms\n", BENCHMARK_ITERATION, baseline_mode0_total_ms);
+        if (baseline_mode0_total_ms > 0.0f) {
             printf("  - MM API (Q prepare) avg: %f ms (%.2f%%)\n",
-                   milliseconds_mm_api,
-                   milliseconds_mm_api * 100.0f / milliseconds_compute_attn);
+                   baseline_mode0_mm_ms,
+                   baseline_mode0_mm_ms * 100.0f / baseline_mode0_total_ms);
             printf("  - attention kernel avg:   %f ms (%.2f%%)\n",
-                   milliseconds_attn_kernel,
-                   milliseconds_attn_kernel * 100.0f / milliseconds_compute_attn);
+                   baseline_mode0_attn_ms,
+                   baseline_mode0_attn_ms * 100.0f / baseline_mode0_total_ms);
         }
         
         cudaDeviceSynchronize();
@@ -1017,7 +1016,7 @@ int main(int argc, char** argv)
         }
             
         float milliseconds_compute_attn = total_milliseconds_compute_attn / BENCHMARK_ITERATION;
-        printf("Average compute_attn_v2 execution time over %d iterations: %f ms\n", BENCHMARK_ITERATION, milliseconds_compute_attn);
+        printf("Average (BF16TripleBitmap_MM_API + compute_attn_v2) execution time over %d iterations: %f ms\n", BENCHMARK_ITERATION, milliseconds_compute_attn);
         
         cudaDeviceSynchronize();
             CUDA_CHECK(cudaMemcpy(O_host, O_device, sizeof(__nv_bfloat16) * X_N_GLOBAL * Wq_M_GLOBAL, cudaMemcpyDeviceToHost)); 
@@ -1099,7 +1098,7 @@ int main(int argc, char** argv)
         }
             
         float milliseconds_compute_attn = total_milliseconds_compute_attn / BENCHMARK_ITERATION;
-        printf("Average compute_attn_v2 execution time over %d iterations: %f ms\n", BENCHMARK_ITERATION, milliseconds_compute_attn);
+        printf("Average (BF16TripleBitmap_MM_API + compute_attn_v2) execution time over %d iterations: %f ms\n", BENCHMARK_ITERATION, milliseconds_compute_attn);
         
         cudaDeviceSynchronize();
             CUDA_CHECK(cudaMemcpy(O_host, O_device, sizeof(__nv_bfloat16) * X_N_GLOBAL * Wq_M_GLOBAL, cudaMemcpyDeviceToHost)); 
@@ -1115,7 +1114,7 @@ int main(int argc, char** argv)
         {
             compute_attn_v2_zipserv<<<gridDim, blockDim, shared_mem_size>>>(
                 O_device, 
-                Q_device,
+                // Q_device,
                 K_device, V_device, 
                 X_N_GLOBAL, X_N_GLOBAL,  X_N_GLOBAL,
                 Wq_M_GLOBAL, 
@@ -1145,7 +1144,7 @@ int main(int argc, char** argv)
             cudaEventRecord(start);
             compute_attn_v2_zipserv<<<gridDim, blockDim, shared_mem_size>>>(
                 O_device, 
-                Q_device,
+                // Q_device,
                 K_device, V_device, 
                 X_N_GLOBAL, X_N_GLOBAL,  X_N_GLOBAL,
                 Wq_M_GLOBAL, 
@@ -1172,7 +1171,7 @@ int main(int argc, char** argv)
         }
         float milliseconds_compute_attn_zipserv = total_milliseconds_compute_attn_zipserv / BENCHMARK_ITERATION;
         zipserv_mode0_total_ms = milliseconds_compute_attn_zipserv;
-        printf("Average compute_attn_v2_zipserv execution time over %d iterations: %f ms\n", BENCHMARK_ITERATION, milliseconds_compute_attn_zipserv);
+        printf("Average compute_attn_v2_zipserv execution time over %d iterations: %f ms\n", BENCHMARK_ITERATION, zipserv_mode0_total_ms);
         if (baseline_mode0_total_ms > 0.0f && baseline_mode0_attn_ms > 0.0f) {
             printf("Mode0 profiling summary:\n");
             printf("  - baseline total (MM API + attn): %f ms\n", baseline_mode0_total_ms);
