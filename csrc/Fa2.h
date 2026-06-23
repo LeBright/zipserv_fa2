@@ -8,7 +8,7 @@
 
 using namespace cute;
 
-#define kBlockM 128
+#define kBlockM 64
 #define kBlockN 64
 #define HeadNum 32
 #define HeadDim 64
