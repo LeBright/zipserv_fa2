@@ -680,15 +680,232 @@ __global__ void compute_attn_v2_zipserv(
     // cp_async_fence();
     // cp_async_wait<0>();
     // __syncthreads();
-    BF16TripleBitmap_MM_Kernel_prepareQKV(Q_smem_ptr, 
-                                          Q_smem_ptr, 
-                                          Q_SignMantissa, Q_CompressedFull, Q_Bitmap1, Q_Bitmap2, Q_Bitmap3, 
-                                          Q_TileOffsets_Median, Q_TileOffsets_Global, Q_max_high_freq_count, Q_max_full_count, 
-                                          Q_start_exp,
-                                          X,
-                                          Q_M_Global, Q_N_Global, Q_K_Global,
-                                          base_id,
-                                          m_block, 0);
+
+    // BF16TripleBitmap_MM_Kernel_prepareQKV(Q_smem_ptr, 
+    //                                       Q_smem_ptr, 
+    //                                       Q_SignMantissa, Q_CompressedFull, Q_Bitmap1, Q_Bitmap2, Q_Bitmap3, 
+    //                                       Q_TileOffsets_Median, Q_TileOffsets_Global, Q_max_high_freq_count, Q_max_full_count, 
+    //                                       Q_start_exp,
+    //                                       X,
+    //                                       Q_M_Global, Q_N_Global, Q_K_Global,
+    //                                       base_id,
+    //                                       m_block, 0);
+    
+    {
+        const int n_block_local = m_block;
+        const int head_id_local = base_id;
+        const int matrix_id_local = 0;
+
+        // Tile_M in zipserv -> HeadDim in fa2
+        // Tile_N in zipserv -> kBlockM in fa2
+        const int x = n_block_local;
+        const int y = head_id_local;
+
+        const int NumKBlock = Q_K_Global / TILE_K;
+        int NumIter = NumKBlock;
+        const int BlockOffset = Q_K_Global / TILE_K * y;
+
+        // B matrix double buffering
+        __nv_bfloat16* smem_B = Q_smem_ptr;
+        const int bitmap_size = 64;
+
+        // Bitmap double buffering
+        uint64_t* smem_Bitmap1 = reinterpret_cast<uint64_t*>(smem_B + (TILE_K * kBlockM * 2));
+        uint64_t* smem_Bitmap2 = smem_Bitmap1 + bitmap_size * 2;
+        uint64_t* smem_Bitmap3 = smem_Bitmap2 + bitmap_size * 2;
+
+        // Compressed data double buffering
+        __nv_bfloat16* smem_FullValues = reinterpret_cast<__nv_bfloat16*>(smem_Bitmap3 + bitmap_size * 2);
+        uint8_t* smem_SignMantissa = reinterpret_cast<uint8_t*>(smem_FullValues + Q_max_full_count * 2);
+
+        const unsigned int warpId = threadIdx.x / WARP_SIZE;
+        const int Tile_Start_Bitmap = y;
+        const int Tile_Start_N = x * kBlockM;
+
+        int Warp_i = warpId;
+        int warp_start_row = 16 * Warp_i;
+        int warp_start_col = 0;
+
+        // Register allocation
+        uint32_t __restrict__ a[2][4];
+        uint32_t __restrict__ b[4 * 2][4];
+
+        const int WarpOffset = BlockOffset * 4 + Warp_i;
+        int global_tile_idx = BlockOffset;
+
+        const int* high_freq_start_ptr = Q_TileOffsets_Global + global_tile_idx * 2;
+        const int* full_start_ptr = Q_TileOffsets_Global + global_tile_idx * 2 + 1;
+
+        int high_freq_start = high_freq_start_ptr[0];
+        int full_start = full_start_ptr[0];
+        int high_freq_count = high_freq_start_ptr[2] - high_freq_start;
+        int full_count = full_start_ptr[2] - full_start;
+
+        const __nv_bfloat16* BTileGlobalPTR = X + Tile_Start_N * Q_K_Global;
+
+        const uint64_t* Bitmap1TileGlobalPTR = Q_Bitmap1 + Tile_Start_Bitmap * Q_K_Global;
+        const uint64_t* Bitmap2TileGlobalPTR = Q_Bitmap2 + Tile_Start_Bitmap * Q_K_Global;
+        const uint64_t* Bitmap3TileGlobalPTR = Q_Bitmap3 + Tile_Start_Bitmap * Q_K_Global;
+
+        // Initial load into the first double buffer
+        CopyTripleBitmapToShared<1>(
+            smem_Bitmap1, smem_Bitmap2, smem_Bitmap3,
+            Bitmap1TileGlobalPTR, Bitmap2TileGlobalPTR, Bitmap3TileGlobalPTR);
+        cp_async_group_commit();
+
+        CopyCompressedDataToShared(
+            smem_SignMantissa, smem_FullValues,
+            Q_SignMantissa + high_freq_start, Q_CompressedFull + full_start,
+            high_freq_count, full_count);
+        cp_async_group_commit();
+
+        CopyTileFromGlobalToShared_X_64_BF16<kBlockM>(
+            smem_B, BTileGlobalPTR, Q_K_Global);
+        cp_async_group_commit();
+
+        // Initialize accumulators
+        float c[WARP_ROW_TENSORS_BITMAP_V3 * 4][REG_PER_C_TENSOR_16_16];
+        for (int i = 0; i < WARP_ROW_TENSORS_BITMAP_V3 * 4; i++)
+            for (int j = 0; j < REG_PER_C_TENSOR_16_16; j++)
+                c[i][j] = 0.0f;
+
+        cp_async_wait_group<1>();
+
+        const int* median_offset_high_warp_ptr = Q_TileOffsets_Median + WarpOffset * 2;
+        const int* median_offset_full_warp_ptr = Q_TileOffsets_Median + WarpOffset * 2 + 1;
+
+        int next_high_freq_start = high_freq_start_ptr[2];
+        int next_full_start = full_start_ptr[2];
+        int next_high_freq_count = high_freq_start_ptr[4] - next_high_freq_start;
+        int next_full_count = full_start_ptr[4] - next_full_start;
+
+        cp_async_wait_group<0>();
+        __syncthreads();
+
+        // Preload tile 0
+        int current_high_freq_start = median_offset_high_warp_ptr[0];
+        int current_full_start = median_offset_full_warp_ptr[0];
+
+        // Current warp read pointer
+        uint64_t* smem_Bitmap1_Warp = smem_Bitmap1 + Warp_i * 16;
+        uint64_t* smem_Bitmap2_Warp = smem_Bitmap2 + Warp_i * 16;
+        uint64_t* smem_Bitmap3_Warp = smem_Bitmap3 + Warp_i * 16;
+
+        // Preload K=0 data into the first buffer
+        LoadNextSlice(
+            a, b, smem_SignMantissa, smem_FullValues,
+            smem_Bitmap1_Warp, smem_Bitmap2_Warp, smem_Bitmap3_Warp,
+            Q_start_exp, current_high_freq_start, current_full_start,
+            smem_B, warp_start_row, warp_start_col, 0);
+
+        #pragma unroll(1)
+        for (int tile_id_k = 0; tile_id_k < NumIter; tile_id_k++) {
+            high_freq_start = next_high_freq_start;
+            full_start = next_full_start;
+            high_freq_count = next_high_freq_count;
+            full_count = next_full_count;
+
+            next_high_freq_start = high_freq_start_ptr[(tile_id_k + 2) * 2];
+            next_full_start = full_start_ptr[(tile_id_k + 2) * 2];
+            next_high_freq_count = high_freq_start_ptr[(tile_id_k + 3) * 2] - next_high_freq_start;
+            next_full_count = full_start_ptr[(tile_id_k + 3) * 2] - next_full_start;
+
+            BTileGlobalPTR = BTileGlobalPTR + TILE_K;
+            Bitmap1TileGlobalPTR = Bitmap1TileGlobalPTR + 64;
+            Bitmap2TileGlobalPTR = Bitmap2TileGlobalPTR + 64;
+            Bitmap3TileGlobalPTR = Bitmap3TileGlobalPTR + 64;
+
+            // Compute double-buffer pointers
+            __nv_bfloat16* __restrict__ smem_write_B_PTR = smem_B + ((tile_id_k + 1) % 2) * (TILE_K * kBlockM);
+            __nv_bfloat16* __restrict__ smem_read_B_PTR = smem_B + ((tile_id_k) % 2) * (TILE_K * kBlockM);
+
+            // Double-buffer pointers for A matrix data
+            uint64_t* smem_write_Bitmap1 = smem_Bitmap1 + ((tile_id_k + 1) % 2) * bitmap_size;
+            uint64_t* smem_write_Bitmap2 = smem_Bitmap2 + ((tile_id_k + 1) % 2) * bitmap_size;
+            uint64_t* smem_write_Bitmap3 = smem_Bitmap3 + ((tile_id_k + 1) % 2) * bitmap_size;
+
+            uint64_t* smem_read_Bitmap1 = smem_Bitmap1 + ((tile_id_k) % 2) * bitmap_size;
+            uint64_t* smem_read_Bitmap2 = smem_Bitmap2 + ((tile_id_k) % 2) * bitmap_size;
+            uint64_t* smem_read_Bitmap3 = smem_Bitmap3 + ((tile_id_k) % 2) * bitmap_size;
+
+            __nv_bfloat16* smem_write_FullValues = smem_FullValues + ((tile_id_k + 1) % 2) * Q_max_full_count;
+            __nv_bfloat16* smem_read_FullValues = smem_FullValues + ((tile_id_k) % 2) * Q_max_full_count;
+
+            uint8_t* smem_write_SignMantissa = smem_SignMantissa + ((tile_id_k + 1) % 2) * Q_max_high_freq_count;
+            uint8_t* smem_read_SignMantissa = smem_SignMantissa + ((tile_id_k) % 2) * Q_max_high_freq_count;
+
+            // Current warp read pointer
+            uint64_t* smem_read_Bitmap1_Warp = smem_read_Bitmap1 + Warp_i * 16;
+            uint64_t* smem_read_Bitmap2_Warp = smem_read_Bitmap2 + Warp_i * 16;
+            uint64_t* smem_read_Bitmap3_Warp = smem_read_Bitmap3 + Warp_i * 16;
+
+            bool GlobalCopy = (tile_id_k + 1) < NumIter;
+
+            // Launch async load for the next tile
+            CopyTripleBitmapToShared<1>(
+                smem_write_Bitmap1, smem_write_Bitmap2, smem_write_Bitmap3,
+                Bitmap1TileGlobalPTR, Bitmap2TileGlobalPTR, Bitmap3TileGlobalPTR, GlobalCopy);
+            cp_async_group_commit();
+
+            CopyCompressedDataToShared(
+                smem_write_SignMantissa, smem_write_FullValues,
+                Q_SignMantissa + high_freq_start, Q_CompressedFull + full_start,
+                high_freq_count, full_count, GlobalCopy);
+            cp_async_group_commit();
+
+            CopyTileFromGlobalToShared_X_64_BF16<kBlockM>(
+                smem_write_B_PTR, BTileGlobalPTR, Q_K_Global, GlobalCopy);
+            cp_async_group_commit();
+
+            LoadNextSlice(
+                a, b, smem_read_SignMantissa, smem_read_FullValues,
+                smem_read_Bitmap1_Warp, smem_read_Bitmap2_Warp, smem_read_Bitmap3_Warp,
+                Q_start_exp, current_high_freq_start, current_full_start,
+                smem_read_B_PTR, warp_start_row, warp_start_col, 1);
+
+            SingleMMASlice(c, a, b, 0);
+
+            LoadNextSlice(
+                a, b, smem_read_SignMantissa, smem_read_FullValues,
+                smem_read_Bitmap1_Warp, smem_read_Bitmap2_Warp, smem_read_Bitmap3_Warp,
+                Q_start_exp, current_high_freq_start, current_full_start,
+                smem_read_B_PTR, warp_start_row, warp_start_col, 2);
+
+            SingleMMASlice(c, a, b, 1);
+
+            LoadNextSlice(
+                a, b, smem_read_SignMantissa, smem_read_FullValues,
+                smem_read_Bitmap1_Warp, smem_read_Bitmap2_Warp, smem_read_Bitmap3_Warp,
+                Q_start_exp, current_high_freq_start, current_full_start,
+                smem_read_B_PTR, warp_start_row, warp_start_col, 3);
+
+            SingleMMASlice(c, a, b, 2);
+
+            cp_async_wait_group<0>();
+            __syncthreads();
+
+            SingleMMASlice(c, a, b, 3);
+
+            if (GlobalCopy) {
+                current_high_freq_start = median_offset_high_warp_ptr[(tile_id_k + 1) * 8];
+                current_full_start = median_offset_full_warp_ptr[(tile_id_k + 1) * 8];
+
+                uint64_t* smem_write_Bitmap1_Warp = smem_write_Bitmap1 + Warp_i * 16;
+                uint64_t* smem_write_Bitmap2_Warp = smem_write_Bitmap2 + Warp_i * 16;
+                uint64_t* smem_write_Bitmap3_Warp = smem_write_Bitmap3 + Warp_i * 16;
+
+                LoadNextSlice(
+                    a, b, smem_write_SignMantissa, smem_write_FullValues,
+                    smem_write_Bitmap1_Warp, smem_write_Bitmap2_Warp, smem_write_Bitmap3_Warp,
+                    Q_start_exp, current_high_freq_start, current_full_start,
+                    smem_write_B_PTR, warp_start_row, warp_start_col, 0);
+            }
+        }
+
+        StoreToSharedMemoryFromRegisterBitmapV3_Swizzle(Q_smem_ptr, c, matrix_id_local);
+
+        __syncthreads();
+    }
 
     // multiply sm scale
     __nv_bfloat162 sm_bf162 = make_bfloat162(__float2bfloat16_rn(sm_scale), __float2bfloat16_rn(sm_scale));
